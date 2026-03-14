@@ -1,7 +1,8 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import router from "./routes";
-import { registerCopilotKitRoute, registerCopilotKitInfoRoute } from "./routes/copilotkit";
+import { registerCopilotKitRoute, registerCopilotKitInfoRoute, initializeRuntime } from "./routes/copilotkit";
+import { registerAgentsRoute } from "./routes/agents";
 
 const app: Express = express();
 
@@ -11,8 +12,9 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 registerCopilotKitInfoRoute(app);
 registerCopilotKitRoute(app);
+registerAgentsRoute(app);
 
 app.use("/api", router);
 
-
+export { initializeRuntime };
 export default app;

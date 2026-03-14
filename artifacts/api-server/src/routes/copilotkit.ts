@@ -10,11 +10,7 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import type { ResearchStep } from "@workspace/db";
 import type { Express } from "express";
-import {
-  buildPlannerPrompt,
-  buildSearcherPrompt,
-  buildSynthesizerPrompt,
-} from "../skills/loader";
+import { loadAllAgents, getAgentConfig } from "../skills/gcp-loader";
 
 function createVertexModel() {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
@@ -153,71 +149,124 @@ const getResearchSessionTool = defineTool({
 });
 
 let cachedRuntime: CopilotRuntime | null = null;
+let cachedHandler: ReturnType<typeof copilotRuntimeNodeHttpEndpoint> | null = null;
 
-function getRuntime(): CopilotRuntime {
-  if (!cachedRuntime) {
-    const model = createVertexModel();
+export async function initializeRuntime(): Promise<void> {
+  // Pre-load agent configs from GCP before the first request arrives
+  await loadAllAgents();
+  cachedRuntime = buildRuntime();
+  cachedHandler = copilotRuntimeNodeHttpEndpoint({ endpoint: COPILOTKIT_PATH, runtime: cachedRuntime });
+}
 
-    const plannerAgent = new BuiltInAgent({
-      model,
-      systemPrompt: buildPlannerPrompt(),
-      tools: [startResearchTool, addResearchStepTool, completePlanningTool],
-      maxSteps: 10,
-    });
+function buildRuntime(): CopilotRuntime {
+  const model = createVertexModel();
 
-    const searcherAgent = new BuiltInAgent({
-      model,
-      systemPrompt: buildSearcherPrompt(),
-      tools: [addResearchStepTool, pauseResearchTool, completeSearchingTool, getResearchSessionTool],
-      maxSteps: 20,
-    });
+  const plannerCfg   = getAgentConfig("planner");
+  const searcherCfg  = getAgentConfig("searcher");
+  const synthesizerCfg = getAgentConfig("synthesizer");
 
-    const synthesizerAgent = new BuiltInAgent({
-      model,
-      systemPrompt: buildSynthesizerPrompt(),
-      tools: [addResearchStepTool, getResearchSessionTool],
-      maxSteps: 10,
-    });
+  const sourceTag = (role: string, cfg: typeof plannerCfg) =>
+    cfg ? ` [v${cfg.version}, src=${cfg.source}, id=${cfg.agentId}]` : " [no config]";
 
-    cachedRuntime = new CopilotRuntime({
-      agents: {
-        planner: plannerAgent,
-        searcher: searcherAgent,
-        synthesizer: synthesizerAgent,
-      },
-    });
+  console.log(`[Runtime] planner${sourceTag("planner", plannerCfg)}`);
+  console.log(`[Runtime] searcher${sourceTag("searcher", searcherCfg)}`);
+  console.log(`[Runtime] synthesizer${sourceTag("synthesizer", synthesizerCfg)}`);
 
-    console.log("CopilotKit runtime initialized with 3 agents: planner, searcher, synthesizer");
+  const plannerAgent = new BuiltInAgent({
+    model,
+    systemPrompt: plannerCfg?.systemPrompt ?? "",
+    tools: [startResearchTool, addResearchStepTool, completePlanningTool],
+    maxSteps: 10,
+  });
+
+  const searcherAgent = new BuiltInAgent({
+    model,
+    systemPrompt: searcherCfg?.systemPrompt ?? "",
+    tools: [addResearchStepTool, pauseResearchTool, completeSearchingTool, getResearchSessionTool],
+    maxSteps: 20,
+  });
+
+  const synthesizerAgent = new BuiltInAgent({
+    model,
+    systemPrompt: synthesizerCfg?.systemPrompt ?? "",
+    tools: [addResearchStepTool, getResearchSessionTool],
+    maxSteps: 10,
+  });
+
+  const runtime = new CopilotRuntime({
+    agents: {
+      planner: plannerAgent,
+      searcher: searcherAgent,
+      synthesizer: synthesizerAgent,
+    },
+  });
+
+  console.log("CopilotKit runtime initialized with 3 agents: planner, searcher, synthesizer");
+  return runtime;
+}
+
+/** Called after a successful /api/agents/reload — rebuilds runtime with fresh prompts. */
+export function rebuildRuntime(): void {
+  console.log("[Runtime] Rebuilding runtime with reloaded GCP configs...");
+  cachedRuntime = buildRuntime();
+  cachedHandler = copilotRuntimeNodeHttpEndpoint({ endpoint: COPILOTKIT_PATH, runtime: cachedRuntime });
+}
+
+function getHandler(): ReturnType<typeof copilotRuntimeNodeHttpEndpoint> {
+  if (!cachedHandler) {
+    // Synchronous fallback: build with whatever is in the GCP cache (may be YAML fallbacks)
+    if (!cachedRuntime) cachedRuntime = buildRuntime();
+    cachedHandler = copilotRuntimeNodeHttpEndpoint({ endpoint: COPILOTKIT_PATH, runtime: cachedRuntime });
   }
-  return cachedRuntime;
+  return cachedHandler;
 }
 
 const COPILOTKIT_PATH = "/api/copilotkit";
 
 export function registerCopilotKitRoute(app: Express) {
-  const runtime = getRuntime();
-  const handler = copilotRuntimeNodeHttpEndpoint({
-    endpoint: COPILOTKIT_PATH,
-    runtime,
-  });
-
   app.use(COPILOTKIT_PATH, (req, res, next) => {
     const originalUrl = req.url;
     const restoredUrl = COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
     console.log(`[CK] ${req.method} ${restoredUrl} body.method=${(req.body as Record<string, unknown>)?.method ?? "n/a"}`);
     req.url = restoredUrl;
-    handler(req, res, next);
+    // Always use the current handler — hot-reload safe
+    getHandler()(req, res, next);
   });
 }
 
 export function registerCopilotKitInfoRoute(app: Express) {
   app.get(`${COPILOTKIT_PATH}/info`, (_req, res) => {
+    const plannerCfg     = getAgentConfig("planner");
+    const searcherCfg    = getAgentConfig("searcher");
+    const synthesizerCfg = getAgentConfig("synthesizer");
+
     res.json({
       version: "1.54.0",
       agents: {
-        planner: { name: "planner", description: "Plans the research into focused sub-questions", className: "BuiltInAgent" },
-        searcher: { name: "searcher", description: "Investigates each sub-question in depth", className: "BuiltInAgent" },
-        synthesizer: { name: "synthesizer", description: "Synthesizes all findings into a final report", className: "BuiltInAgent" },
+        planner: {
+          name: "planner",
+          description: plannerCfg?.displayName ?? "Plans research into focused sub-questions",
+          gcpAgentId: plannerCfg?.agentId,
+          gcpResourceName: plannerCfg?.gcpResourceName,
+          configSource: plannerCfg?.source ?? "unknown",
+          className: "BuiltInAgent",
+        },
+        searcher: {
+          name: "searcher",
+          description: searcherCfg?.displayName ?? "Investigates each sub-question in depth",
+          gcpAgentId: searcherCfg?.agentId,
+          gcpResourceName: searcherCfg?.gcpResourceName,
+          configSource: searcherCfg?.source ?? "unknown",
+          className: "BuiltInAgent",
+        },
+        synthesizer: {
+          name: "synthesizer",
+          description: synthesizerCfg?.displayName ?? "Synthesizes all findings into a final report",
+          gcpAgentId: synthesizerCfg?.agentId,
+          gcpResourceName: synthesizerCfg?.gcpResourceName,
+          configSource: synthesizerCfg?.source ?? "unknown",
+          className: "BuiltInAgent",
+        },
       },
       audioFileTranscriptionEnabled: false,
       a2uiEnabled: false,
