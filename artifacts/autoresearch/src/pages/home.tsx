@@ -1,14 +1,21 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
 import { CopilotChat } from '@copilotkit/react-ui';
 import { useCopilotAction } from '@copilotkit/react-core';
 import { useQueryClient } from '@tanstack/react-query';
 import { BrainCircuit, Globe, FileText, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { useActiveAgent } from '@/contexts/agent-context';
 
 export default function Home() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  const { setActiveAgent } = useActiveAgent();
+
+  useEffect(() => {
+    setActiveAgent("planner");
+  }, [setActiveAgent]);
+
   const [lastSessionId, setLastSessionId] = useState<string | null>(null);
 
   useCopilotAction({

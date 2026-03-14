@@ -8,6 +8,7 @@ import Home from "@/pages/home";
 import Session from "@/pages/session";
 import NotFound from "@/pages/not-found";
 import "@copilotkit/react-ui/styles.css";
+import { AgentProvider, useActiveAgent } from "@/contexts/agent-context";
 
 const queryClient = new QueryClient();
 
@@ -26,16 +27,27 @@ function Router() {
   );
 }
 
+function CopilotKitWrapper({ children }: { children: React.ReactNode }) {
+  const { activeAgent } = useActiveAgent();
+  return (
+    <CopilotKit runtimeUrl={COPILOTKIT_URL} agent={activeAgent}>
+      {children}
+    </CopilotKit>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <CopilotKit runtimeUrl={COPILOTKIT_URL}>
-          <WouterRouter base={BASE}>
-            <Router />
-          </WouterRouter>
-          <Toaster />
-        </CopilotKit>
+        <AgentProvider>
+          <CopilotKitWrapper>
+            <WouterRouter base={BASE}>
+              <Router />
+            </WouterRouter>
+            <Toaster />
+          </CopilotKitWrapper>
+        </AgentProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

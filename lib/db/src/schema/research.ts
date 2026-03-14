@@ -22,6 +22,7 @@ export const researchSessions = pgTable("research_sessions", {
   id: text("id").primaryKey(),
   topic: text("topic").notNull(),
   status: text("status").notNull().default("pending"),
+  currentAgent: text("current_agent").notNull().default("planner"),
   report: text("report"),
   steps: jsonb("steps").notNull().default([]),
   createdAt: timestamp("created_at").notNull().defaultNow(),

@@ -282,11 +282,40 @@ router.get("/sessions/:sessionId", async (req, res) => {
     id: s.id,
     topic: s.topic,
     status: s.status,
+    currentAgent: s.currentAgent,
     steps: s.steps || [],
     report: s.report || undefined,
     createdAt: s.createdAt.toISOString(),
     completedAt: s.completedAt?.toISOString() || undefined,
   });
+});
+
+router.patch("/sessions/:sessionId/phase", async (req, res) => {
+  const { sessionId } = req.params;
+  const { phase, currentAgent } = req.body as { phase: string; currentAgent: string };
+
+  if (!phase || !currentAgent) {
+    res.status(400).json({ error: "phase and currentAgent are required" });
+    return;
+  }
+
+  const session = await db
+    .select()
+    .from(researchSessions)
+    .where(eq(researchSessions.id, sessionId))
+    .limit(1);
+
+  if (!session[0]) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  await db
+    .update(researchSessions)
+    .set({ status: phase, currentAgent })
+    .where(eq(researchSessions.id, sessionId));
+
+  res.json({ success: true, status: phase, currentAgent });
 });
 
 router.get("/:sessionId/stream", async (req, res) => {
