@@ -33,6 +33,21 @@ A full-stack AI research assistant at `artifacts/autoresearch/`. Key features:
 - `synthesizer-agent.yaml` — synthesis and final report format
 - `loader.ts` — reads YAML files and builds a unified system prompt for the agent
 
+### GCP Vertex AI Agent Engine
+The three agents are registered as **Reasoning Engines** in Vertex AI Agent Engine
+(GCP project `vertex-ai-demo-468112`, location `us-central1`):
+
+| Agent | GCP Agent ID | Env var |
+|---|---|---|
+| AutoResearch Planner | `2955468563764215808` | `GCP_AGENT_PLANNER` |
+| AutoResearch Searcher | `3132797799091929088` | `GCP_AGENT_SEARCHER` |
+| AutoResearch Synthesizer | `7777134914817753088` | `GCP_AGENT_SYNTHESIZER` |
+
+View in GCP Console: https://console.cloud.google.com/vertex-ai/reasoning-engines?project=vertex-ai-demo-468112
+
+Agent metadata is stored in `artifacts/api-server/gcp-agents.json`.
+Creation script: `artifacts/api-server/src/create-gcp-agents-final.ts` (re-run to recreate if deleted).
+
 ### CopilotKit Routing Note (Express v5 compatibility)
 Express v5 uses a new `path-to-regexp` that breaks `*` wildcards. CopilotKit's endpoint uses Hono
 internally with a `basePath`. The workaround: mount with `app.use(COPILOTKIT_PATH, handler)` and

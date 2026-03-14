@@ -24,3 +24,10 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+GCP_AGENT_PLANNER = "2955468563764215808"
+GCP_AGENT_SEARCHER = "3132797799091929088"
+GCP_AGENT_SYNTHESIZER = "7777134914817753088"

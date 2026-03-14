@@ -1,0 +1,17 @@
+{
+  "planner": {
+    "agentId": "2955468563764215808",
+    "agentName": "projects/869395420831/locations/us-central1/reasoningEngines/2955468563764215808",
+    "displayName": "AutoResearch Planner"
+  },
+  "searcher": {
+    "agentId": "3132797799091929088",
+    "agentName": "projects/869395420831/locations/us-central1/reasoningEngines/3132797799091929088",
+    "displayName": "AutoResearch Searcher"
+  },
+  "synthesizer": {
+    "agentId": "7777134914817753088",
+    "agentName": "projects/869395420831/locations/us-central1/reasoningEngines/7777134914817753088",
+    "displayName": "AutoResearch Synthesizer"
+  }
+}
