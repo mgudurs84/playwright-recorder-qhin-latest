@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useLocation } from 'wouter';
 import { useStartResearch } from '@workspace/api-client-react';
-import { Sparkles, ArrowRight, BrainCircuit, Globe, FileText, Search } from 'lucide-react';
+import { Sparkles, ArrowRight, BrainCircuit, Globe, FileText, Search, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
