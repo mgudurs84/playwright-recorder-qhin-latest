@@ -27,7 +27,9 @@ function createVertexModel() {
     },
   });
 
-  return vertex("gemini-2.5-flash-lite-preview-06-17");
+  const modelId = process.env.VERTEX_MODEL_ID || "gemini-2.5-flash";
+  console.log(`Using Vertex AI model: ${modelId}`);
+  return vertex(modelId);
 }
 
 const startResearchTool = defineTool({

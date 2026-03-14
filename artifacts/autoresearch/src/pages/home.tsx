@@ -53,7 +53,7 @@ export default function Home() {
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 backdrop-blur-md mb-4">
             <Sparkles className="w-3.5 h-3.5 text-primary animate-pulse" />
             <span className="text-xs font-medium text-foreground/70 tracking-wide">
-              Powered by Vertex AI Gemini 2.5 Flash Lite · Human-in-the-Loop
+              Powered by Vertex AI Gemini 2.5 Flash · Human-in-the-Loop
             </span>
           </div>
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-2">
@@ -90,7 +90,7 @@ export default function Home() {
           <CopilotChat
             labels={{
               title: "AutoResearch Agent",
-              initial: "Hi! I'm your autonomous research agent powered by Gemini 2.5 Flash Lite.\n\nJust tell me what you want to research — I'll break the topic into focused sub-questions, gather findings step by step, **pause to ask for your input** at key moments, and produce a comprehensive report.\n\nTry: *\"Research the latest developments in solid-state batteries\"*",
+              initial: "Hi! I'm your autonomous research agent powered by Gemini 2.5 Flash.\n\nJust tell me what you want to research — I'll break the topic into focused sub-questions, gather findings step by step, **pause to ask for your input** at key moments, and produce a comprehensive report.\n\nTry: *\"Research the latest developments in solid-state batteries\"*",
               placeholder: "What would you like to research today?",
             }}
             instructions="You are an AutoResearch agent. When the user asks to research a topic, call the startResearch backend tool, then guide the research step by step using addResearchStep. After starting the research session, also call the frontend startResearch action to navigate the user to the session page."
