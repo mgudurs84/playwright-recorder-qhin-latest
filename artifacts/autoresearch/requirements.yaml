@@ -1,0 +1,18 @@
+packages:
+  "framer-motion": "For premium layout animations, step transitions, and real-time state changes"
+  "react-markdown": "To render the final synthesized research report beautifully"
+  "remark-gfm": "For github flavored markdown support in the report (tables, lists, etc)"
+  "date-fns": "For elegant date and time formatting in the session history"
+  "clsx": "For conditionally merging tailwind classes seamlessly"
+  "tailwind-merge": "To resolve tailwind class conflicts"
+  "@tailwindcss/typography": "For styling the markdown output beautifully with prose classes"
+
+images:
+  - path: "artifacts/autoresearch/public/images/hero-glow.png"
+    description: "A dark, highly polished abstract background with subtle deep cyan and purple glowing ethereal shapes, representing AI and neural networks, premium deep tech aesthetic"
+    aspect_ratio: "16:9"
+
+notes:
+  - The SSE stream is manually parsed using fetch + ReadableStream to support streaming chunks.
+  - Using lucide-react for all iconography to maintain a clean, consistent UI.
+  - The UI uses a deep dark mode theme (Zinc/Slate base with Cyan/Indigo accents) for a premium developer/researcher tool feel.

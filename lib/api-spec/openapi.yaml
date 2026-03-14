@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: research
+    description: AutoResearch operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /research/start:
+    post:
+      operationId: startResearch
+      tags: [research]
+      summary: Start a research session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartResearchRequest"
+      responses:
+        "200":
+          description: Research session started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartResearchResponse"
+  /research/{sessionId}/stream:
+    get:
+      operationId: streamResearch
+      tags: [research]
+      summary: Stream research progress via SSE
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE stream of research events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /research/sessions:
+    get:
+      operationId: listResearchSessions
+      tags: [research]
+      summary: List all research sessions
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchSessionList"
+  /research/sessions/{sessionId}:
+    get:
+      operationId: getResearchSession
+      tags: [research]
+      summary: Get a specific research session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Research session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchSession"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +107,99 @@ components:
           type: string
       required:
         - status
-
+    StartResearchRequest:
+      type: object
+      properties:
+        topic:
+          type: string
+          description: The research topic or question
+      required:
+        - topic
+    StartResearchResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        topic:
+          type: string
+      required:
+        - sessionId
+        - topic
+    ResearchStep:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - planning
+            - searching
+            - reading
+            - synthesizing
+            - complete
+            - error
+        subQuestion:
+          type: string
+        content:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchSource"
+        timestamp:
+          type: string
+      required:
+        - type
+        - content
+        - timestamp
+    ResearchSource:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+      required:
+        - title
+        - url
+    ResearchSession:
+      type: object
+      properties:
+        id:
+          type: string
+        topic:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, complete, error]
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchStep"
+        report:
+          type: string
+        createdAt:
+          type: string
+        completedAt:
+          type: string
+      required:
+        - id
+        - topic
+        - status
+        - steps
+        - createdAt
+    ResearchSessionList:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchSession"
+      required:
+        - sessions
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error

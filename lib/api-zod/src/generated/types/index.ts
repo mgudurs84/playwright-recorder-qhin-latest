@@ -6,4 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./researchSession";
+export * from "./researchSessionList";
+export * from "./researchSessionStatus";
+export * from "./researchSource";
+export * from "./researchStep";
+export * from "./researchStepType";
+export * from "./startResearchRequest";
+export * from "./startResearchResponse";

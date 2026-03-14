@@ -5,18 +5,28 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  HealthStatus,
+  ResearchSession,
+  ResearchSessionList,
+  StartResearchRequest,
+  StartResearchResponse,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -92,6 +102,344 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Start a research session
+ */
+export const getStartResearchUrl = () => {
+  return `/api/research/start`;
+};
+
+export const startResearch = async (
+  startResearchRequest: StartResearchRequest,
+  options?: RequestInit,
+): Promise<StartResearchResponse> => {
+  return customFetch<StartResearchResponse>(getStartResearchUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(startResearchRequest),
+  });
+};
+
+export const getStartResearchMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startResearch>>,
+    TError,
+    { data: BodyType<StartResearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof startResearch>>,
+  TError,
+  { data: BodyType<StartResearchRequest> },
+  TContext
+> => {
+  const mutationKey = ["startResearch"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof startResearch>>,
+    { data: BodyType<StartResearchRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return startResearch(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type StartResearchMutationResult = NonNullable<
+  Awaited<ReturnType<typeof startResearch>>
+>;
+export type StartResearchMutationBody = BodyType<StartResearchRequest>;
+export type StartResearchMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Start a research session
+ */
+export const useStartResearch = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startResearch>>,
+    TError,
+    { data: BodyType<StartResearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof startResearch>>,
+  TError,
+  { data: BodyType<StartResearchRequest> },
+  TContext
+> => {
+  return useMutation(getStartResearchMutationOptions(options));
+};
+
+/**
+ * @summary Stream research progress via SSE
+ */
+export const getStreamResearchUrl = (sessionId: string) => {
+  return `/api/research/${sessionId}/stream`;
+};
+
+export const streamResearch = async (
+  sessionId: string,
+  options?: RequestInit,
+): Promise<string> => {
+  return customFetch<string>(getStreamResearchUrl(sessionId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getStreamResearchQueryKey = (sessionId: string) => {
+  return [`/api/research/${sessionId}/stream`] as const;
+};
+
+export const getStreamResearchQueryOptions = <
+  TData = Awaited<ReturnType<typeof streamResearch>>,
+  TError = ErrorType<unknown>,
+>(
+  sessionId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof streamResearch>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getStreamResearchQueryKey(sessionId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof streamResearch>>> = ({
+    signal,
+  }) => streamResearch(sessionId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!sessionId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof streamResearch>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type StreamResearchQueryResult = NonNullable<
+  Awaited<ReturnType<typeof streamResearch>>
+>;
+export type StreamResearchQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Stream research progress via SSE
+ */
+
+export function useStreamResearch<
+  TData = Awaited<ReturnType<typeof streamResearch>>,
+  TError = ErrorType<unknown>,
+>(
+  sessionId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof streamResearch>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getStreamResearchQueryOptions(sessionId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary List all research sessions
+ */
+export const getListResearchSessionsUrl = () => {
+  return `/api/research/sessions`;
+};
+
+export const listResearchSessions = async (
+  options?: RequestInit,
+): Promise<ResearchSessionList> => {
+  return customFetch<ResearchSessionList>(getListResearchSessionsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListResearchSessionsQueryKey = () => {
+  return [`/api/research/sessions`] as const;
+};
+
+export const getListResearchSessionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listResearchSessions>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listResearchSessions>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListResearchSessionsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listResearchSessions>>
+  > = ({ signal }) => listResearchSessions({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listResearchSessions>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListResearchSessionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listResearchSessions>>
+>;
+export type ListResearchSessionsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List all research sessions
+ */
+
+export function useListResearchSessions<
+  TData = Awaited<ReturnType<typeof listResearchSessions>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listResearchSessions>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListResearchSessionsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get a specific research session
+ */
+export const getGetResearchSessionUrl = (sessionId: string) => {
+  return `/api/research/sessions/${sessionId}`;
+};
+
+export const getResearchSession = async (
+  sessionId: string,
+  options?: RequestInit,
+): Promise<ResearchSession> => {
+  return customFetch<ResearchSession>(getGetResearchSessionUrl(sessionId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetResearchSessionQueryKey = (sessionId: string) => {
+  return [`/api/research/sessions/${sessionId}`] as const;
+};
+
+export const getGetResearchSessionQueryOptions = <
+  TData = Awaited<ReturnType<typeof getResearchSession>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  sessionId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResearchSession>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetResearchSessionQueryKey(sessionId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getResearchSession>>
+  > = ({ signal }) =>
+    getResearchSession(sessionId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!sessionId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getResearchSession>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetResearchSessionQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getResearchSession>>
+>;
+export type GetResearchSessionQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get a specific research session
+ */
+
+export function useGetResearchSession<
+  TData = Awaited<ReturnType<typeof getResearchSession>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  sessionId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResearchSession>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetResearchSessionQueryOptions(sessionId, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

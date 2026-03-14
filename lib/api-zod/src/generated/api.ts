@@ -14,3 +14,100 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Start a research session
+ */
+export const StartResearchBody = zod.object({
+  topic: zod.string().describe("The research topic or question"),
+});
+
+export const StartResearchResponse = zod.object({
+  sessionId: zod.string(),
+  topic: zod.string(),
+});
+
+/**
+ * @summary Stream research progress via SSE
+ */
+export const StreamResearchParams = zod.object({
+  sessionId: zod.coerce.string(),
+});
+
+/**
+ * @summary List all research sessions
+ */
+export const ListResearchSessionsResponse = zod.object({
+  sessions: zod.array(
+    zod.object({
+      id: zod.string(),
+      topic: zod.string(),
+      status: zod.enum(["pending", "running", "complete", "error"]),
+      steps: zod.array(
+        zod.object({
+          type: zod.enum([
+            "planning",
+            "searching",
+            "reading",
+            "synthesizing",
+            "complete",
+            "error",
+          ]),
+          subQuestion: zod.string().optional(),
+          content: zod.string(),
+          sources: zod
+            .array(
+              zod.object({
+                title: zod.string(),
+                url: zod.string(),
+              }),
+            )
+            .optional(),
+          timestamp: zod.string(),
+        }),
+      ),
+      report: zod.string().optional(),
+      createdAt: zod.string(),
+      completedAt: zod.string().optional(),
+    }),
+  ),
+});
+
+/**
+ * @summary Get a specific research session
+ */
+export const GetResearchSessionParams = zod.object({
+  sessionId: zod.coerce.string(),
+});
+
+export const GetResearchSessionResponse = zod.object({
+  id: zod.string(),
+  topic: zod.string(),
+  status: zod.enum(["pending", "running", "complete", "error"]),
+  steps: zod.array(
+    zod.object({
+      type: zod.enum([
+        "planning",
+        "searching",
+        "reading",
+        "synthesizing",
+        "complete",
+        "error",
+      ]),
+      subQuestion: zod.string().optional(),
+      content: zod.string(),
+      sources: zod
+        .array(
+          zod.object({
+            title: zod.string(),
+            url: zod.string(),
+          }),
+        )
+        .optional(),
+      timestamp: zod.string(),
+    }),
+  ),
+  report: zod.string().optional(),
+  createdAt: zod.string(),
+  completedAt: zod.string().optional(),
+});

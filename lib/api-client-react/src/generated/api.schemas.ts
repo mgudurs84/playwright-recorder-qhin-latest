@@ -8,3 +8,66 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface StartResearchRequest {
+  /** The research topic or question */
+  topic: string;
+}
+
+export interface StartResearchResponse {
+  sessionId: string;
+  topic: string;
+}
+
+export type ResearchStepType =
+  (typeof ResearchStepType)[keyof typeof ResearchStepType];
+
+export const ResearchStepType = {
+  planning: "planning",
+  searching: "searching",
+  reading: "reading",
+  synthesizing: "synthesizing",
+  complete: "complete",
+  error: "error",
+} as const;
+
+export interface ResearchSource {
+  title: string;
+  url: string;
+}
+
+export interface ResearchStep {
+  type: ResearchStepType;
+  subQuestion?: string;
+  content: string;
+  sources?: ResearchSource[];
+  timestamp: string;
+}
+
+export type ResearchSessionStatus =
+  (typeof ResearchSessionStatus)[keyof typeof ResearchSessionStatus];
+
+export const ResearchSessionStatus = {
+  pending: "pending",
+  running: "running",
+  complete: "complete",
+  error: "error",
+} as const;
+
+export interface ResearchSession {
+  id: string;
+  topic: string;
+  status: ResearchSessionStatus;
+  steps: ResearchStep[];
+  report?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ResearchSessionList {
+  sessions: ResearchSession[];
+}
+
+export interface ErrorResponse {
+  error: string;
+}
