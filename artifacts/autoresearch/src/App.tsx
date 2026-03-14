@@ -2,12 +2,17 @@ import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { CopilotKit } from "@copilotkit/react-core";
 import { Layout } from "@/components/layout";
 import Home from "@/pages/home";
 import Session from "@/pages/session";
 import NotFound from "@/pages/not-found";
+import "@copilotkit/react-ui/styles.css";
 
 const queryClient = new QueryClient();
+
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const COPILOTKIT_URL = `${BASE}/api/copilotkit`;
 
 function Router() {
   return (
@@ -25,10 +30,12 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
+        <CopilotKit runtimeUrl={COPILOTKIT_URL}>
+          <WouterRouter base={BASE}>
+            <Router />
+          </WouterRouter>
+          <Toaster />
+        </CopilotKit>
       </TooltipProvider>
     </QueryClientProvider>
   );

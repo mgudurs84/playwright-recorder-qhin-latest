@@ -16,12 +16,39 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
 
+## AutoResearch App
+
+A full-stack AI research assistant at `artifacts/autoresearch/`. Key features:
+
+- **CopilotKit v1.54** frontend chat UI (`@copilotkit/react-core`, `@copilotkit/react-ui`)
+- **Vertex AI Gemini 2.5 Flash Lite** via `@ai-sdk/google-vertex` (GCP project: `vertex-ai-demo-468112`)
+- **Human-in-the-loop**: Agent pauses at planning and mid-research phases to ask for user input
+- **YAML skill files** define each agent's behavior (`artifacts/api-server/src/skills/*.yaml`)
+- **CopilotKit runtime** endpoint at `POST /api/copilotkit` via `copilotRuntimeNodeHttpEndpoint`
+- **Session persistence**: Research sessions, steps, and reports stored in PostgreSQL
+
+### YAML Skill Files
+- `planner-agent.yaml` — planning phase behavior & clarifying questions
+- `search-agent.yaml` — research phase behavior & mid-research check-in
+- `synthesizer-agent.yaml` — synthesis and final report format
+- `loader.ts` — reads YAML files and builds a unified system prompt for the agent
+
+### CopilotKit Routing Note (Express v5 compatibility)
+Express v5 uses a new `path-to-regexp` that breaks `*` wildcards. CopilotKit's endpoint uses Hono
+internally with a `basePath`. The workaround: mount with `app.use(COPILOTKIT_PATH, handler)` and
+restore the full URL by prepending the base path before calling the handler:
+```
+req.url = COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
+```
+
 ## Structure
 
 ```text
 artifacts-monorepo/
 ├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
+│   ├── api-server/         # Express API server (+ CopilotKit runtime + Vertex AI)
+│   │   └── src/skills/     # YAML skill files + loader for agent prompts
+│   └── autoresearch/       # React + Vite frontend with CopilotKit chat UI
 ├── lib/                    # Shared libraries
 │   ├── api-spec/           # OpenAPI spec + Orval codegen config
 │   ├── api-client-react/   # Generated React Query hooks
