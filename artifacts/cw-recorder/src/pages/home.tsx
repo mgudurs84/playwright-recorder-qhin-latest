@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
-import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download } from "lucide-react";
+import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AgentStepper } from "@/components/agent-stepper";
 import { apiUrl } from "@/lib/utils"; // used for Download Report href
@@ -34,6 +34,8 @@ export default function Home() {
   const [transactionId, setTransactionId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"date" | "transaction_id">("date");
   const [newSearchInput, setNewSearchInput] = useState("");
+  const [liveExtractionPage, setLiveExtractionPage] = useState(0);
+  const [liveExtractionCount, setLiveExtractionCount] = useState(0);
   const [otpMode, setOtpMode] = useState(false);
   const [otpValue, setOtpValue] = useState("");
   const [otpSubmitting, setOtpSubmitting] = useState(false);
@@ -85,9 +87,11 @@ export default function Home() {
       try {
         const res = await fetch(apiUrl("/api/cw/status"));
         if (!res.ok) return;
-        const status = await res.json() as { phase: string; daysBack: number; transactionId: string | null; searchMode: "date" | "transaction_id"; recordCount: number; errorCount: number };
+        const status = await res.json() as { phase: string; daysBack: number; transactionId: string | null; searchMode: "date" | "transaction_id"; recordCount: number; errorCount: number; liveExtractionPage: number; liveExtractionCount: number };
 
         setPhase(status.phase);
+        setLiveExtractionPage(status.liveExtractionPage ?? 0);
+        setLiveExtractionCount(status.liveExtractionCount ?? 0);
 
         // Trigger navigator — fires once when auth completes
         if (status.phase === "authenticated" && !navTriggeredRef.current) {
@@ -206,6 +210,24 @@ export default function Home() {
               className="h-full"
             />
           </div>
+
+          <AnimatePresence>
+            {phase === "navigating" && liveExtractionPage > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="border-t border-border bg-card/60 backdrop-blur-sm px-4 py-2.5 flex items-center gap-3"
+              >
+                <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
+                <span className="text-sm text-foreground/80">
+                  Extracting page <span className="font-semibold text-primary">{liveExtractionPage}</span>
+                  {" · "}
+                  <span className="font-semibold text-primary">{liveExtractionCount.toLocaleString()}</span> records so far…
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           <AnimatePresence>
             {otpMode && (

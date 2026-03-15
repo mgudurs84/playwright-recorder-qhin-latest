@@ -142,6 +142,8 @@ export class PlaywrightService {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private currentPhase: RunPhase = "idle";
+  public liveExtractionPage = 0;
+  public liveExtractionCount = 0;
   private lastCheckpointUrl: string | null = null;
 
   private crashDetected = false;
@@ -665,6 +667,8 @@ export class PlaywrightService {
     const page = await this.getPage();
     const allTransactions: CwTransactionRecord[] = [];
     let pageNum = 1;
+    this.liveExtractionPage = 0;
+    this.liveExtractionCount = 0;
 
     while (true) {
       const pageTransactions = await withRetry(async () => {
@@ -701,6 +705,8 @@ export class PlaywrightService {
         console.log(`[PlaywrightService] DOM columns: ${Object.keys(pageTransactions[0]).join(", ")}`);
       }
       allTransactions.push(...pageTransactions.map(r => this.mapKendoRecord(r)));
+      this.liveExtractionPage = pageNum;
+      this.liveExtractionCount = allTransactions.length;
 
       if (maxRecords > 0 && allTransactions.length >= maxRecords) {
         console.log(`[PlaywrightService] Max records (${maxRecords}) reached`);

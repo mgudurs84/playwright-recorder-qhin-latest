@@ -487,6 +487,7 @@ export function registerCwCopilotKitRoute(app: Express) {
 
 export function registerCwStatusRoute(app: Express) {
   app.get("/api/cw/status", (_req, res) => {
+    const pw = getPlaywrightService();
     res.json({
       phase: cwSession.phase,
       daysBack: cwSession.daysBack,
@@ -494,6 +495,8 @@ export function registerCwStatusRoute(app: Express) {
       searchMode: cwSession.searchMode,
       recordCount: cwSession.recordCount,
       errorCount: cwSession.errorCount,
+      liveExtractionPage: pw.liveExtractionPage,
+      liveExtractionCount: pw.liveExtractionCount,
     });
   });
 
