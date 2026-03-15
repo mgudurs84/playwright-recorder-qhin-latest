@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
-import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
+import { useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
 import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AgentStepper } from "@/components/agent-stepper";
-import { apiUrl } from "@/lib/utils";
+import { apiUrl } from "@/lib/utils"; // used for Download Report href
 
 // Map server phase → stepper display step
 function phaseToStep(phase: string): "cw-auth" | "cw-navigator" | "cw-reporter" | "complete" {
@@ -131,22 +131,6 @@ export default function Home() {
       content: `Run again — get the last ${daysBack} days of transaction errors`,
     }));
   }, [daysBack, appendMessage, reset]);
-
-  useCopilotAction({
-    name: "uiShowScreenshot",
-    description: "Display an inline screenshot from the automation",
-    parameters: [
-      { name: "screenshotUrl", type: "string", required: true },
-      { name: "caption", type: "string", required: false },
-    ],
-    handler: async () => ({ displayed: true }),
-    render: ({ args }) => !args?.screenshotUrl ? <></> : (
-      <div className="space-y-1">
-        <img src={apiUrl(args.screenshotUrl as string)} alt={args.caption as string || "Automation screenshot"} className="w-full rounded-lg border border-border" />
-        {args.caption && <p className="text-xs text-muted-foreground">{args.caption as string}</p>}
-      </div>
-    ),
-  });
 
   return (
     <div className="flex flex-col h-full">
