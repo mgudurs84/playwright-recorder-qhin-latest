@@ -482,6 +482,71 @@ export class PlaywrightService {
     }, { page, reloadOnStale: true });
   }
 
+  async searchByTransactionId(transactionId: string): Promise<string> {
+    const page = await this.getPage();
+
+    return withRetry(async () => {
+      // Strategy 1: form input labelled "Transaction ID" or similar
+      const txInput = page.locator(
+        'input[name*="transactionId" i], input[name*="transaction_id" i], ' +
+        'input[id*="transactionId" i], input[placeholder*="transaction id" i]'
+      );
+      if ((await txInput.count()) > 0) {
+        await txInput.first().clear();
+        await txInput.first().fill(transactionId);
+        const searchBtn = page.locator(
+          'button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"]'
+        );
+        if ((await searchBtn.count()) > 0) await searchBtn.first().click();
+        await page.waitForTimeout(3000);
+        return await takeScreenshotAsync(page, "tx-id-filter-applied");
+      }
+
+      // Strategy 2: Kendo column filter icon on "Transaction ID" header
+      const headers = page.locator(".k-grid-header th");
+      const count = await headers.count();
+      let txColIdx = -1;
+      for (let i = 0; i < count; i++) {
+        const text = (await headers.nth(i).innerText()).toLowerCase();
+        if (text.includes("transaction id") || text.includes("transactionid") || text.includes("trace id")) {
+          txColIdx = i;
+          break;
+        }
+      }
+      if (txColIdx >= 0) {
+        const filterIcon = headers.nth(txColIdx).locator(".k-grid-filter, a[class*='filter'], span[class*='filter']");
+        if ((await filterIcon.count()) > 0) {
+          await filterIcon.first().click();
+          await page.waitForTimeout(500);
+          const filterInput = page.locator(".k-filter-menu input[type='text'], .k-popup input[type='text']");
+          if ((await filterInput.count()) > 0) {
+            await filterInput.first().fill(transactionId);
+            const applyBtn = page.locator(".k-filter-menu button.k-primary, .k-popup button.k-primary, .k-filter-menu button:has-text('Filter')");
+            if ((await applyBtn.count()) > 0) await applyBtn.first().click();
+            await page.waitForTimeout(3000);
+            return await takeScreenshotAsync(page, "tx-id-filter-applied");
+          }
+        }
+      }
+
+      // Strategy 3: Kendo Grid JavaScript API — most reliable for Kendo grids
+      await page.evaluate((txId: string) => {
+        const gridEl = document.querySelector("[data-role='grid']") as HTMLElement & {
+          kendoGrid?: { dataSource: { filter(f: object): void } };
+        };
+        if (gridEl?.kendoGrid) {
+          gridEl.kendoGrid.dataSource.filter({
+            field: "TransactionId",
+            operator: "contains",
+            value: txId,
+          });
+        }
+      }, transactionId);
+      await page.waitForTimeout(3000);
+      return await takeScreenshotAsync(page, "tx-id-filter-applied");
+    }, { page, reloadOnStale: true });
+  }
+
   async waitForDataLoaded(): Promise<boolean> {
     const page = await this.getPage();
 

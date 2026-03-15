@@ -122,6 +122,8 @@ function validateExtractedRecords(records: CwTransactionRecord[]): { valid: bool
 interface CwSessionState {
   phase: string;
   daysBack: number;
+  transactionId: string | null;
+  searchMode: "date" | "transaction_id";
   records: CwTransactionRecord[];
   recordCount: number;
   errorCount: number;
@@ -132,6 +134,8 @@ interface CwSessionState {
 let cwSession: CwSessionState = {
   phase: "idle",
   daysBack: 7,
+  transactionId: null,
+  searchMode: "date",
   records: [],
   recordCount: 0,
   errorCount: 0,
@@ -143,6 +147,8 @@ function resetCwSession(daysBack = 7): void {
   cwSession = {
     phase: "idle",
     daysBack,
+    transactionId: null,
+    searchMode: "date",
     records: [],
     recordCount: 0,
     errorCount: 0,
@@ -222,9 +228,10 @@ const cwAuthCompleteTool = defineTool({
   name: "cwAuthComplete",
   description: "Signal that authentication is complete. The Navigator will take over automatically.",
   parameters: z.object({
-    daysBack: z.number().default(7).describe("How many days back to search for transactions"),
+    daysBack: z.number().default(7).describe("How many days back to search (use 0 when searching by transaction ID)"),
+    transactionId: z.string().optional().describe("Specific transaction ID to find. Leave empty for date-based search."),
   }),
-  execute: async ({ daysBack }) => {
+  execute: async ({ daysBack, transactionId }) => {
     const pw = getPlaywrightService();
     const phase = pw.getCurrentPhase();
     if (phase !== "authenticating" && phase !== "authenticated") {
@@ -232,9 +239,11 @@ const cwAuthCompleteTool = defineTool({
     }
     pw.setPhase("authenticated");
     cwSession.phase = "authenticated";
-    cwSession.daysBack = daysBack;
-    console.log(`[CW] Auth complete. daysBack=${daysBack}`);
-    return { success: true, nextAgent: "cw-navigator", currentPhase: "authenticated" };
+    cwSession.daysBack = transactionId ? 0 : daysBack;
+    cwSession.transactionId = transactionId || null;
+    cwSession.searchMode = transactionId ? "transaction_id" : "date";
+    console.log(`[CW] Auth complete. mode=${cwSession.searchMode} daysBack=${cwSession.daysBack} txId=${cwSession.transactionId ?? "n/a"}`);
+    return { success: true, nextAgent: "cw-navigator", currentPhase: "authenticated", searchMode: cwSession.searchMode };
   },
 });
 
@@ -280,6 +289,28 @@ const cwApplyDateFilterTool = defineTool({
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "date-filter-error"); } catch {}
       return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
+    }
+  },
+});
+
+const cwSearchByTransactionIdTool = defineTool({
+  name: "cwSearchByTransactionId",
+  description: "Filter the Transaction Logs table to find a specific transaction by ID.",
+  parameters: z.object({
+    transactionId: z.string().describe("The transaction ID to search for"),
+  }),
+  execute: async ({ transactionId }) => {
+    const pw = getPlaywrightService();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "authenticated" && phase !== "navigating") {
+      return { success: false, error: `Cannot search in '${phase}' phase — must navigate first` };
+    }
+    try {
+      const screenshotUrl = await pw.searchByTransactionId(transactionId);
+      const dataLoaded = await pw.waitForDataLoaded();
+      return { success: true, dataLoaded, transactionId, screenshotUrl };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   },
 });
@@ -398,7 +429,7 @@ function buildCwRuntime(): CopilotRuntime {
     prompt: "You are the CommonWell Recorder agent. You handle authentication, navigation, and reporting in sequence. Follow the user's instructions precisely and call the tools they specify.",
     tools: [
       cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool,
-      cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwExtractTransactionsTool, cwNavigationCompleteTool,
+      cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwSearchByTransactionIdTool, cwExtractTransactionsTool, cwNavigationCompleteTool,
       cwGetRunDataTool, cwSaveReportTool,
     ],
     maxSteps: 30,
@@ -459,6 +490,8 @@ export function registerCwStatusRoute(app: Express) {
     res.json({
       phase: cwSession.phase,
       daysBack: cwSession.daysBack,
+      transactionId: cwSession.transactionId,
+      searchMode: cwSession.searchMode,
       recordCount: cwSession.recordCount,
       errorCount: cwSession.errorCount,
     });

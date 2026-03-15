@@ -15,19 +15,25 @@ function phaseToStep(phase: string): "cw-auth" | "cw-navigator" | "cw-reporter" 
 }
 
 // Map server phase → chat instructions
-function phaseToInstructions(phase: string, daysBack: number): string {
+function phaseToInstructions(phase: string, daysBack: number, transactionId: string | null): string {
   if (phase === "authenticated" || phase === "navigating") {
+    if (transactionId) {
+      return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwSearchByTransactionId("${transactionId}"), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
+    }
     return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${daysBack}), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
   }
   if (phase === "extracted" || phase === "complete") {
     return "You are the CW Reporter. IMMEDIATELY call cwGetRunData. Analyze errors. Call cwSaveReport(report) with your full markdown analysis. Do NOT call any other tools after cwSaveReport.";
   }
-  return "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession — if valid, call cwAuthComplete(daysBack) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack). STOP.";
+  return "You are the CW Auth agent. From the user's request extract EITHER: (a) daysBack — a number of days e.g. 'last 3 days' → daysBack=3 (default 7), OR (b) a transactionId — a specific ID string. Call cwCheckSession — if valid, call cwAuthComplete(daysBack, transactionId) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack, transactionId). STOP.";
 }
 
 export default function Home() {
   const [phase, setPhase] = useState("idle");
   const [daysBack, setDaysBack] = useState(7);
+  const [transactionId, setTransactionId] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<"date" | "transaction_id">("date");
+  const [newSearchInput, setNewSearchInput] = useState("");
   const [otpMode, setOtpMode] = useState(false);
   const [otpValue, setOtpValue] = useState("");
   const [otpSubmitting, setOtpSubmitting] = useState(false);
@@ -79,7 +85,7 @@ export default function Home() {
       try {
         const res = await fetch(apiUrl("/api/cw/status"));
         if (!res.ok) return;
-        const status = await res.json() as { phase: string; daysBack: number; recordCount: number; errorCount: number };
+        const status = await res.json() as { phase: string; daysBack: number; transactionId: string | null; searchMode: "date" | "transaction_id"; recordCount: number; errorCount: number };
 
         setPhase(status.phase);
 
@@ -87,9 +93,14 @@ export default function Home() {
         if (status.phase === "authenticated" && !navTriggeredRef.current) {
           navTriggeredRef.current = true;
           setDaysBack(status.daysBack ?? 7);
+          setTransactionId(status.transactionId ?? null);
+          setSearchMode(status.searchMode ?? "date");
+          const navMsg = status.transactionId
+            ? `Authentication complete. Navigate to Transaction Logs, search for transaction ID "${status.transactionId}", extract matching rows, then call cwNavigationComplete.`
+            : `Authentication complete. Navigate to Transaction Logs, apply a ${status.daysBack ?? 7}-day date filter, extract all table rows, then call cwNavigationComplete.`;
           appendMessageRef.current(new TextMessage({
             id: `nav-${Date.now()}`, role: MessageRole.User,
-            content: `Authentication complete. Navigate to Transaction Logs, apply a ${status.daysBack ?? 7}-day date filter, extract all table rows, then call cwNavigationComplete.`,
+            content: navMsg,
           }));
         }
 
@@ -124,20 +135,26 @@ export default function Home() {
     } finally { setOtpSubmitting(false); }
   }, [otpValue, appendMessage]);
 
-  const handleRunAgain = useCallback(async () => {
+  const handleRunAgain = useCallback(async (query?: string) => {
+    const searchQuery = query ?? (searchMode === "transaction_id" && transactionId
+      ? `Find transaction ID ${transactionId}`
+      : `Get the last ${daysBack} days of transaction errors`);
     try { await fetch(apiUrl("/api/cw/reset"), { method: "POST" }); } catch {}
     navTriggeredRef.current = false;
     repTriggeredRef.current = false;
     setPhase("idle");
     setRunComplete(false);
     setOtpMode(false);
+    setTransactionId(null);
+    setSearchMode("date");
+    setNewSearchInput("");
     setPollingActive(true);
     reset();
     await appendMessage(new TextMessage({
       id: `rerun-${Date.now()}`, role: MessageRole.User,
-      content: `Run again — get the last ${daysBack} days of transaction errors`,
+      content: searchQuery,
     }));
-  }, [daysBack, appendMessage, reset]);
+  }, [daysBack, transactionId, searchMode, appendMessage, reset]);
 
   return (
     <div className="flex flex-col h-full">
@@ -182,10 +199,10 @@ export default function Home() {
             <CopilotChat
               labels={{
                 title: "CW Recorder Agent",
-                initial: "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the CommonWell portal, extract transaction logs, and analyze errors for you.\n\nTry: *\"Get last 7 days of transaction errors\"*",
-                placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of transaction errors...",
+                initial: "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the portal, extract transaction logs, and analyze errors.\n\nTry:\n- *\"Get last 7 days of transaction errors\"*\n- *\"Find transaction ID abc-1234-xyz\"*",
+                placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of errors, or find transaction ID abc-123...",
               }}
-              instructions={phaseToInstructions(phase, daysBack)}
+              instructions={phaseToInstructions(phase, daysBack, transactionId)}
               className="h-full"
             />
           </div>
@@ -222,19 +239,41 @@ export default function Home() {
 
           <AnimatePresence>
             {runComplete && (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4 flex gap-2">
-                <a
-                  href={apiUrl("/api/cw/report")}
-                  download
-                  className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download Report
-                </a>
-                <button onClick={handleRunAgain} className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors">
-                  <RotateCcw className="w-4 h-4" />
-                  Run Again ({daysBack} days)
-                </button>
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4 space-y-2">
+                <div className="flex gap-2">
+                  <a
+                    href={apiUrl("/api/cw/report")}
+                    download
+                    className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Report
+                  </a>
+                  <button
+                    onClick={() => handleRunAgain()}
+                    className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {searchMode === "transaction_id" ? `Search Again` : `Run Again (${daysBack}d)`}
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newSearchInput}
+                    onChange={(e) => setNewSearchInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && newSearchInput.trim() && handleRunAgain(newSearchInput.trim())}
+                    placeholder="New search: e.g. 'last 3 days' or 'transaction ID xyz-123'"
+                    className="flex-1 px-4 py-2 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                  />
+                  <button
+                    onClick={() => newSearchInput.trim() && handleRunAgain(newSearchInput.trim())}
+                    disabled={!newSearchInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Go
+                  </button>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
