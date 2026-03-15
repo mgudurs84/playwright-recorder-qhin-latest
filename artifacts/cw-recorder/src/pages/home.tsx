@@ -41,6 +41,11 @@ export default function Home() {
     onSubmitMessage: () => { setPollingActive(true); },
   });
 
+  // Keep a stable ref to appendMessage so the polling interval never restarts
+  // just because CopilotKit changed the function reference during streaming.
+  const appendMessageRef = useRef(appendMessage);
+  useEffect(() => { appendMessageRef.current = appendMessage; }, [appendMessage]);
+
   // Clear stale chat on mount
   useLayoutEffect(() => { reset(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -65,7 +70,9 @@ export default function Home() {
     }
   }, [messages, phase, otpMode]);
 
-  // Poll /api/cw/status — update phase, fire trigger messages for navigator & reporter
+  // Poll /api/cw/status — update phase, fire trigger messages for navigator & reporter.
+  // Depends only on pollingActive/runComplete — appendMessage comes from ref to avoid
+  // restarting the interval every time CopilotKit changes the function reference mid-stream.
   useEffect(() => {
     if (!pollingActive || runComplete) return;
     const interval = setInterval(async () => {
@@ -80,7 +87,7 @@ export default function Home() {
         if (status.phase === "authenticated" && !navTriggeredRef.current) {
           navTriggeredRef.current = true;
           setDaysBack(status.daysBack ?? 7);
-          appendMessage(new TextMessage({
+          appendMessageRef.current(new TextMessage({
             id: `nav-${Date.now()}`, role: MessageRole.User,
             content: `Authentication complete. Navigate to Transaction Logs, apply a ${status.daysBack ?? 7}-day date filter, extract all table rows, then call cwNavigationComplete.`,
           }));
@@ -89,7 +96,7 @@ export default function Home() {
         // Trigger reporter — fires once when extraction completes
         if (status.phase === "extracted" && !repTriggeredRef.current) {
           repTriggeredRef.current = true;
-          appendMessage(new TextMessage({
+          appendMessageRef.current(new TextMessage({
             id: `rep-${Date.now()}`, role: MessageRole.User,
             content: `Extraction complete (${status.recordCount} records, ${status.errorCount} errors). Call cwGetRunData, analyze the transactions, generate the full error analysis report, then call cwSaveReport.`,
           }));
@@ -102,7 +109,7 @@ export default function Home() {
       } catch { /* ignore */ }
     }, 3000);
     return () => clearInterval(interval);
-  }, [pollingActive, runComplete, appendMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pollingActive, runComplete]); // appendMessage accessed via ref — no restart on reference change
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
