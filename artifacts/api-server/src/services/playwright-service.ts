@@ -196,10 +196,11 @@ export class PlaywrightService {
       this.context = null;
       this.page = null;
 
-      // If the run already completed, just reset cleanly — no need to restore session
+      // If the run already completed, reset cleanly and spin up a fresh page
       if (this.currentPhase === "complete" || this.currentPhase === "idle") {
         console.log(`[PlaywrightService] Run ${this.currentPhase} — resetting for fresh start`);
         this.currentPhase = "idle";
+        await this.createFreshPage();
         return true;
       }
 
