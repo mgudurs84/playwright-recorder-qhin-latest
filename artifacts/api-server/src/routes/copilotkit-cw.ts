@@ -153,14 +153,7 @@ const cwCheckSessionTool = defineTool({
   description: "Check if a valid saved session exists for the CommonWell portal.",
   parameters: z.object({}),
   execute: async () => {
-    const username = process.env.CW_USERNAME;
-    if (!username) return { valid: false, reason: "CW_USERNAME not configured" };
-    const pw = getPlaywrightService();
-    const loaded = await pw.loadSessionFromDb(username);
-    if (!loaded) return { valid: false, reason: "No saved session or session expired" };
-    const valid = await pw.validateSession();
-    if (valid) pw.setPhase("authenticated");
-    return { valid, reason: valid ? "Session is valid — skipping login" : "Session expired or invalid" };
+    return { valid: false, reason: "Fresh session required — proceeding with full login" };
   },
 });
 
@@ -177,9 +170,6 @@ const cwLoginTool = defineTool({
     const pw = getPlaywrightService();
     try {
       const result = await pw.login(username, password);
-      if (!result.needsOtp) {
-        await pw.saveSessionToDb(username);
-      }
       return { success: true, ...result };
     } catch (err) {
       const message = (err as Error).message;
@@ -204,10 +194,6 @@ const cwSubmitOtpTool = defineTool({
     }
     try {
       const result = await pw.submitOtp(otp);
-      if (result.success) {
-        const username = process.env.CW_USERNAME!;
-        await pw.saveSessionToDb(username);
-      }
       return result;
     } catch (err) {
       let screenshotUrl: string | undefined;
@@ -502,11 +488,12 @@ export function registerCwStatusRoute(app: Express) {
     });
   });
 
-  app.post("/api/cw/reset", (_req, res) => {
+  app.post("/api/cw/reset", async (_req, res) => {
     const pw = getPlaywrightService();
+    try { await pw.close(); } catch {}
     pw.setPhase("idle");
     resetCwSession();
-    console.log("[CW] Session reset via API");
+    console.log("[CW] Browser closed and session reset");
     res.json({ success: true });
   });
 }
