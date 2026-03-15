@@ -34,3 +34,4 @@ GCP_AGENT_SYNTHESIZER = "7777134914817753088"
 
 [nix]
 channel = "stable-25_05"
+packages = ["glib", "nss", "nspr", "atk", "cups", "dbus", "expat", "libGL", "libGLU", "libxkbcommon", "fontconfig", "freetype", "pango", "cairo", "alsa-lib", "at-spi2-atk", "at-spi2-core", "xorg.libX11", "xorg.libxcb", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXfixes", "xorg.libXrandr", "xorg.libXext", "xorg.libXi", "xorg.libXcursor", "xorg.libXrender", "xorg.libXtst", "mesa", "libgbm"]
