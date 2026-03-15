@@ -20,6 +20,7 @@
     "express": "^5",
     "google-auth-library": "^10.6.1",
     "js-yaml": "^4.1.1",
+    "playwright": "^1.58.2",
     "zod": "catalog:"
   },
   "devDependencies": {

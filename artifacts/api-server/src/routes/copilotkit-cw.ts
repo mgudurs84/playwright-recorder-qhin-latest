@@ -1,0 +1,459 @@
+import {
+  CopilotRuntime,
+  copilotRuntimeNodeHttpEndpoint,
+} from "@copilotkit/runtime";
+import { BuiltInAgent, defineTool } from "@copilotkit/runtime/v2";
+import { createVertex } from "@ai-sdk/google-vertex";
+import { z } from "zod";
+import { db, cwRuns } from "@workspace/db";
+import { eq, desc } from "drizzle-orm";
+import { readFileSync } from "fs";
+import { join } from "path";
+import yaml from "js-yaml";
+import type { Express } from "express";
+import { getPlaywrightService } from "../services/playwright-service";
+
+function createVertexModel() {
+  const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
+  if (!serviceAccountJson) {
+    throw new Error("GCP_SERVICE_ACCOUNT_JSON environment variable is required");
+  }
+  const serviceAccount = JSON.parse(serviceAccountJson);
+  const vertex = createVertex({
+    project: serviceAccount.project_id || "vertex-ai-demo-468112",
+    location: "us-central1",
+    googleAuthOptions: { credentials: serviceAccount },
+  });
+  return vertex(process.env.VERTEX_MODEL_ID || "gemini-2.5-flash");
+}
+
+interface SkillDef {
+  name: string;
+  system_prompt: string;
+  human_in_the_loop?: { message?: string };
+}
+
+function loadCwSkill(filename: string): SkillDef {
+  const filePath = join(import.meta.dirname, "..", "skills", filename);
+  const raw = readFileSync(filePath, "utf8");
+  return yaml.load(raw) as SkillDef;
+}
+
+const cwStartRunTool = defineTool({
+  name: "cwStartRun",
+  description: "Create a new CommonWell automation run. Returns a runId to use in all subsequent calls.",
+  parameters: z.object({
+    daysBack: z.number().default(7).describe("How many days back to search for transactions"),
+  }),
+  execute: async ({ daysBack }) => {
+    const pw = getPlaywrightService();
+    const runId = await pw.createRun({ daysBack, startedAt: new Date().toISOString() });
+    await pw.addRunStep({ type: "authenticating", content: "Starting automation run" });
+    return { runId, daysBack };
+  },
+});
+
+const cwCheckSessionTool = defineTool({
+  name: "cwCheckSession",
+  description: "Check if a valid saved session exists for the CommonWell portal.",
+  parameters: z.object({}),
+  execute: async () => {
+    const username = process.env.CW_USERNAME;
+    if (!username) return { valid: false, reason: "CW_USERNAME not configured" };
+
+    const pw = getPlaywrightService();
+    const loaded = await pw.loadSessionFromDb(username);
+    if (!loaded) return { valid: false, reason: "No saved session or session expired" };
+
+    const valid = await pw.validateSession();
+    if (valid) {
+      await pw.addRunStep({ type: "authenticating", content: "Existing session is valid — skipping login" });
+    }
+    return { valid, reason: valid ? "Session is valid" : "Session expired or invalid" };
+  },
+});
+
+const cwLoginTool = defineTool({
+  name: "cwLogin",
+  description: "Log into the CommonWell portal. Returns whether OTP is needed.",
+  parameters: z.object({}),
+  execute: async () => {
+    const username = process.env.CW_USERNAME;
+    const password = process.env.CW_PASSWORD;
+    if (!username || !password) {
+      return { success: false, needsOtp: false, error: "CW_USERNAME and CW_PASSWORD must be set" };
+    }
+
+    const pw = getPlaywrightService();
+    try {
+      const result = await pw.login(username, password);
+      await pw.addRunStep({
+        type: "authenticating",
+        content: result.needsOtp ? "Login submitted — OTP required" : "Login successful",
+        screenshotUrl: result.screenshotUrl,
+      });
+      return { success: true, ...result };
+    } catch (err) {
+      const message = (err as Error).message;
+      await pw.addRunStep({ type: "error", content: `Login failed: ${message}` });
+      return { success: false, needsOtp: false, error: message };
+    }
+  },
+});
+
+const cwSubmitOtpTool = defineTool({
+  name: "cwSubmitOtp",
+  description: "Submit the OTP verification code to complete login.",
+  parameters: z.object({
+    otp: z.string().describe("The one-time verification code from the user"),
+  }),
+  execute: async ({ otp }) => {
+    const pw = getPlaywrightService();
+    try {
+      const result = await pw.submitOtp(otp);
+      if (result.success) {
+        const username = process.env.CW_USERNAME!;
+        await pw.saveSessionToDb(username);
+        await pw.addRunStep({
+          type: "authenticating",
+          content: "OTP verified — session saved",
+          screenshotUrl: result.screenshotUrl,
+        });
+      } else {
+        await pw.addRunStep({
+          type: "error",
+          content: "OTP verification failed — please try again",
+          screenshotUrl: result.screenshotUrl,
+        });
+      }
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+});
+
+const cwAuthCompleteTool = defineTool({
+  name: "cwAuthComplete",
+  description: "Signal that authentication is complete and the Navigator should take over.",
+  parameters: z.object({
+    runId: z.string().describe("The automation run ID"),
+  }),
+  execute: async ({ runId }) => {
+    const pw = getPlaywrightService();
+    await pw.updateRun({ status: "authenticated" });
+    await pw.addRunStep({ type: "authenticating", content: "Authentication complete" });
+    return { success: true, runId, nextAgent: "cw-navigator" };
+  },
+});
+
+const cwNavigateToTransactionsTool = defineTool({
+  name: "cwNavigateToTransactions",
+  description: "Navigate to the Transaction Logs page in the CommonWell portal.",
+  parameters: z.object({}),
+  execute: async () => {
+    const pw = getPlaywrightService();
+    try {
+      const screenshotUrl = await pw.navigateToTransactionLogs();
+      await pw.addRunStep({
+        type: "navigating",
+        content: "Navigated to Transaction Logs",
+        screenshotUrl,
+      });
+      return { success: true, screenshotUrl };
+    } catch (err) {
+      const message = (err as Error).message;
+      await pw.addRunStep({ type: "error", content: `Navigation failed: ${message}` });
+      return { success: false, error: message };
+    }
+  },
+});
+
+const cwApplyDateFilterTool = defineTool({
+  name: "cwApplyDateFilter",
+  description: "Apply a date range filter on the Transaction Logs page.",
+  parameters: z.object({
+    daysBack: z.number().default(7).describe("Number of days back to filter"),
+  }),
+  execute: async ({ daysBack }) => {
+    const pw = getPlaywrightService();
+    try {
+      const screenshotUrl = await pw.applyDateFilter(daysBack);
+      const dataLoaded = await pw.waitForDataLoaded();
+      await pw.addRunStep({
+        type: "navigating",
+        content: dataLoaded
+          ? `Date filter applied (${daysBack} days) — data loaded`
+          : `Date filter applied (${daysBack} days) — no data found`,
+        screenshotUrl,
+      });
+      return { success: true, dataLoaded, screenshotUrl };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+});
+
+const cwExtractTransactionsTool = defineTool({
+  name: "cwExtractTransactions",
+  description: "Extract all transaction records from the loaded table. Uses Kendo API (fast) with DOM pagination fallback.",
+  parameters: z.object({
+    maxRecords: z.number().default(0).describe("Max records to extract (0 = all)"),
+  }),
+  execute: async ({ maxRecords }) => {
+    const pw = getPlaywrightService();
+    try {
+      const { records, screenshotUrl } = await pw.extractTransactions(maxRecords);
+      const errorRecords = records.filter(
+        (r: any) => r.status && r.status.toLowerCase().includes("error")
+      );
+
+      await pw.updateRun({
+        records,
+        recordCount: records.length,
+        errorCount: errorRecords.length,
+      });
+      await pw.addRunStep({
+        type: "extracting",
+        content: `Extracted ${records.length} transactions (${errorRecords.length} errors)`,
+        screenshotUrl,
+      });
+
+      return {
+        success: true,
+        totalRecords: records.length,
+        errorCount: errorRecords.length,
+        screenshotUrl,
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+});
+
+const cwNavigationCompleteTool = defineTool({
+  name: "cwNavigationComplete",
+  description: "Signal that navigation and extraction are complete. The Reporter should take over.",
+  parameters: z.object({
+    runId: z.string().describe("The automation run ID"),
+  }),
+  execute: async ({ runId }) => {
+    const pw = getPlaywrightService();
+    await pw.updateRun({ status: "extracted" });
+    await pw.addRunStep({ type: "extracting", content: "Extraction complete" });
+    return { success: true, runId, nextAgent: "cw-reporter" };
+  },
+});
+
+const cwGetRunDataTool = defineTool({
+  name: "cwGetRunData",
+  description: "Retrieve the extracted transaction records for analysis.",
+  parameters: z.object({
+    runId: z.string().describe("The automation run ID"),
+  }),
+  execute: async ({ runId }) => {
+    const run = await db.select().from(cwRuns).where(eq(cwRuns.id, runId)).limit(1);
+    if (!run[0]) return { error: "Run not found" };
+
+    const records = (run[0].records as any[]) || [];
+    const errorRecords = records.filter(
+      (r: any) => r.status && r.status.toLowerCase().includes("error")
+    );
+
+    return {
+      runId,
+      totalRecords: records.length,
+      errorCount: errorRecords.length,
+      records,
+      parameters: run[0].parameters,
+      steps: run[0].steps,
+    };
+  },
+});
+
+const cwSaveReportTool = defineTool({
+  name: "cwSaveReport",
+  description: "Save the analysis report to the run and mark it complete.",
+  parameters: z.object({
+    runId: z.string().describe("The automation run ID"),
+    report: z.string().describe("The markdown analysis report"),
+  }),
+  execute: async ({ runId, report }) => {
+    await db
+      .update(cwRuns)
+      .set({ report, status: "complete", completedAt: new Date() })
+      .where(eq(cwRuns.id, runId));
+
+    const pw = getPlaywrightService();
+    await pw.addRunStep({ type: "complete", content: "Report saved" });
+    await pw.close();
+
+    return { success: true, runId };
+  },
+});
+
+const cwListRunsTool = defineTool({
+  name: "cwListRuns",
+  description: "List recent automation runs.",
+  parameters: z.object({
+    limit: z.number().default(10).describe("Max runs to return"),
+  }),
+  execute: async ({ limit }) => {
+    const runs = await db
+      .select({
+        id: cwRuns.id,
+        status: cwRuns.status,
+        recordCount: cwRuns.recordCount,
+        errorCount: cwRuns.errorCount,
+        startedAt: cwRuns.startedAt,
+        completedAt: cwRuns.completedAt,
+        parameters: cwRuns.parameters,
+      })
+      .from(cwRuns)
+      .orderBy(desc(cwRuns.startedAt))
+      .limit(limit);
+    return { runs };
+  },
+});
+
+let cachedCwRuntime: CopilotRuntime | null = null;
+let cachedCwHandler: ReturnType<typeof copilotRuntimeNodeHttpEndpoint> | null = null;
+
+function buildCwRuntime(): CopilotRuntime {
+  const model = createVertexModel();
+
+  let authPrompt: string;
+  let navigatorPrompt: string;
+  let reporterPrompt: string;
+
+  try {
+    const authSkill = loadCwSkill("cw-auth-agent.yaml");
+    authPrompt = authSkill.system_prompt;
+  } catch {
+    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, and cwSubmitOtp tools.";
+  }
+
+  try {
+    const navSkill = loadCwSkill("cw-navigator-agent.yaml");
+    navigatorPrompt = navSkill.system_prompt;
+  } catch {
+    navigatorPrompt = "You are the Navigator Agent. Navigate to Transaction Logs, apply date filters, and extract table data.";
+  }
+
+  try {
+    const repSkill = loadCwSkill("cw-reporter-agent.yaml");
+    reporterPrompt = repSkill.system_prompt;
+  } catch {
+    reporterPrompt = "You are the Reporter Agent. Analyze extracted JSON records and produce an error summary report.";
+  }
+
+  const authAgent = new BuiltInAgent({
+    model,
+    systemPrompt: authPrompt,
+    tools: [cwStartRunTool, cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool],
+    maxSteps: 10,
+  });
+
+  const navigatorAgent = new BuiltInAgent({
+    model,
+    systemPrompt: navigatorPrompt,
+    tools: [cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwExtractTransactionsTool, cwNavigationCompleteTool],
+    maxSteps: 15,
+  });
+
+  const reporterAgent = new BuiltInAgent({
+    model,
+    systemPrompt: reporterPrompt,
+    tools: [cwGetRunDataTool, cwSaveReportTool, cwListRunsTool],
+    maxSteps: 10,
+  });
+
+  const runtime = new CopilotRuntime({
+    agents: {
+      "cw-auth": authAgent,
+      "cw-navigator": navigatorAgent,
+      "cw-reporter": reporterAgent,
+    },
+  });
+
+  console.log("[CW Runtime] Initialized with 3 agents: cw-auth, cw-navigator, cw-reporter");
+  return runtime;
+}
+
+const CW_COPILOTKIT_PATH = "/api/cw-copilotkit";
+
+function getCwHandler(): ReturnType<typeof copilotRuntimeNodeHttpEndpoint> | null {
+  if (!cachedCwHandler) {
+    try {
+      if (!cachedCwRuntime) cachedCwRuntime = buildCwRuntime();
+      cachedCwHandler = copilotRuntimeNodeHttpEndpoint({
+        endpoint: CW_COPILOTKIT_PATH,
+        runtime: cachedCwRuntime,
+      });
+    } catch (err) {
+      console.error("[CW Runtime] Failed to initialize:", (err as Error).message);
+      return null;
+    }
+  }
+  return cachedCwHandler;
+}
+
+export function registerCwCopilotKitRoute(app: Express) {
+  app.get(`${CW_COPILOTKIT_PATH}/info`, (_req, res) => {
+    res.json({
+      version: "1.0.0",
+      agents: {
+        "cw-auth": { name: "cw-auth", description: "Authenticates with CommonWell portal" },
+        "cw-navigator": { name: "cw-navigator", description: "Navigates and extracts transaction data" },
+        "cw-reporter": { name: "cw-reporter", description: "Analyzes records and produces error reports" },
+      },
+    });
+  });
+
+  app.use(CW_COPILOTKIT_PATH, (req, res, next) => {
+    const handler = getCwHandler();
+    if (!handler) {
+      res.status(503).json({ error: "CW CopilotKit runtime not available. Check GCP_SERVICE_ACCOUNT_JSON configuration." });
+      return;
+    }
+    const originalUrl = req.url;
+    const restoredUrl = CW_COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
+    console.log(`[CW-CK] ${req.method} ${restoredUrl}`);
+    req.url = restoredUrl;
+    handler(req, res, next);
+  });
+}
+
+export function registerCwRunsRoute(app: Express) {
+  app.get("/api/cw/runs", async (_req, res) => {
+    try {
+      const runs = await db
+        .select({
+          id: cwRuns.id,
+          status: cwRuns.status,
+          recordCount: cwRuns.recordCount,
+          errorCount: cwRuns.errorCount,
+          parameters: cwRuns.parameters,
+          screenshotUrls: cwRuns.screenshotUrls,
+          startedAt: cwRuns.startedAt,
+          completedAt: cwRuns.completedAt,
+        })
+        .from(cwRuns)
+        .orderBy(desc(cwRuns.startedAt))
+        .limit(20);
+      res.json({ runs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get("/api/cw/runs/:id", async (req, res) => {
+    try {
+      const run = await db.select().from(cwRuns).where(eq(cwRuns.id, req.params.id)).limit(1);
+      if (!run[0]) return res.status(404).json({ error: "Run not found" });
+      res.json(run[0]);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+}

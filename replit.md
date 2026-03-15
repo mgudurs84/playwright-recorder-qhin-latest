@@ -56,6 +56,35 @@ restore the full URL by prepending the base path before calling the handler:
 req.url = COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
 ```
 
+## CommonWell Recorder App
+
+A chat-based Playwright automation tool at `artifacts/cw-recorder/`. Key features:
+
+- **Three CopilotKit agents**: Auth → Navigator → Reporter pipeline
+- **Playwright browser automation** for CommonWell Health Alliance portal
+- **DOM table extraction** via Kendo DataSource API fast path + DOM pagination fallback (no vision AI)
+- **Session persistence**: Browser sessions saved/loaded from PostgreSQL (`cw_sessions` table)
+- **Run tracking**: Automation runs with steps, records, screenshots (`cw_runs` table)
+- **Retry logic**: Exponential backoff on all Playwright calls, browser crash recovery
+- **Screenshot serving** at `/api/screenshots/*` from `/tmp/cw-screenshots`
+
+### CW Backend Routes
+- `POST /api/cw-copilotkit` — CopilotKit runtime for CW agents (separate from AutoResearch runtime)
+- `GET /api/cw-copilotkit/info` — Agent info endpoint
+- `GET /api/cw/runs` — List recent runs
+- `GET /api/cw/runs/:id` — Get run details
+- YAML skill files: `cw-auth-agent.yaml`, `cw-navigator-agent.yaml`, `cw-reporter-agent.yaml`
+
+### CW Frontend
+- CopilotKit chat with agent stepper (Auth → Navigate → Report)
+- Run history sidebar with auto-refresh
+- Run detail page with step timeline and screenshots
+- Frontend transition actions use `ui*` prefix names to avoid collision with backend tool names
+
+### Environment Variables
+- `CW_USERNAME` / `CW_PASSWORD` — CommonWell portal credentials
+- `GCP_SERVICE_ACCOUNT_JSON` — Required for Vertex AI model
+
 ## Structure
 
 ```text
@@ -63,7 +92,8 @@ artifacts-monorepo/
 ├── artifacts/              # Deployable applications
 │   ├── api-server/         # Express API server (+ CopilotKit runtime + Vertex AI)
 │   │   └── src/skills/     # YAML skill files + loader for agent prompts
-│   └── autoresearch/       # React + Vite frontend with CopilotKit chat UI
+│   ├── autoresearch/       # React + Vite frontend with CopilotKit chat UI
+│   └── cw-recorder/        # React + Vite CW Recorder chat UI
 ├── lib/                    # Shared libraries
 │   ├── api-spec/           # OpenAPI spec + Orval codegen config
 │   ├── api-client-react/   # Generated React Query hooks

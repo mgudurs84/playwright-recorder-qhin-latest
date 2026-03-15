@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/cw-recorder/"
+title = "CW Recorder"
+version = "1.0.0"
+id = "artifacts/cw-recorder"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+localPort = 21806
+name = "web"
+paths = ["/cw-recorder/"]
+
+[services.development]
+run = "pnpm --filter @workspace/cw-recorder run dev"
+
+[services.env]
+PORT = "21806"
+BASE_PATH = "/cw-recorder/"
+
+[services.production]
+build = ["pnpm", "--filter", "@workspace/cw-recorder", "run", "build"]
+publicDir = "artifacts/cw-recorder/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
