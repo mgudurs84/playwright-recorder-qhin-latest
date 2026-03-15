@@ -1,17 +1,54 @@
-import { useEffect } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
-import { useCopilotAction } from "@copilotkit/react-core";
-import { Shield, Navigation, FileText, Monitor } from "lucide-react";
-import { motion } from "framer-motion";
+import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
+import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useActiveCwAgent } from "@/contexts/agent-context";
 import { AgentStepper } from "@/components/agent-stepper";
 
 export default function Home() {
   const { activeAgent, setActiveAgent } = useActiveCwAgent();
+  const [otpMode, setOtpMode] = useState(false);
+  const [otpValue, setOtpValue] = useState("");
+  const [otpSubmitting, setOtpSubmitting] = useState(false);
+  const [runComplete, setRunComplete] = useState(false);
+  const [lastRunParams, setLastRunParams] = useState<{ daysBack: number } | null>(null);
 
   useEffect(() => {
     setActiveAgent("cw-auth");
+    setRunComplete(false);
+    setOtpMode(false);
   }, [setActiveAgent]);
+
+  const { appendMessage } = useCopilotChat();
+
+  const handleOtpSubmit = useCallback(async () => {
+    if (!otpValue.trim()) return;
+    setOtpSubmitting(true);
+    try {
+      await appendMessage({
+        id: `otp-${Date.now()}`,
+        role: "user",
+        content: `My OTP code is: ${otpValue.trim()}`,
+      });
+      setOtpValue("");
+      setOtpMode(false);
+    } finally {
+      setOtpSubmitting(false);
+    }
+  }, [otpValue, appendMessage]);
+
+  const handleRunAgain = useCallback(async () => {
+    setActiveAgent("cw-auth");
+    setRunComplete(false);
+    setOtpMode(false);
+    const days = lastRunParams?.daysBack ?? 7;
+    await appendMessage({
+      id: `rerun-${Date.now()}`,
+      role: "user",
+      content: `Run again — get the last ${days} days of transaction errors`,
+    });
+  }, [lastRunParams, setActiveAgent, appendMessage]);
 
   useCopilotAction({
     name: "uiSwitchToNavigator",
@@ -21,6 +58,7 @@ export default function Home() {
     ],
     handler: async () => {
       setActiveAgent("cw-navigator");
+      setOtpMode(false);
       return { switched: true };
     },
     render: ({ status }) => {
@@ -67,6 +105,7 @@ export default function Home() {
       { name: "report", type: "string", required: true },
     ],
     handler: async () => {
+      setRunComplete(true);
       return { complete: true };
     },
     render: ({ status }) => {
@@ -79,6 +118,77 @@ export default function Home() {
         );
       }
       return null;
+    },
+  });
+
+  useCopilotAction({
+    name: "uiRequestOtp",
+    description: "Show the OTP input field when the portal requires a verification code",
+    parameters: [
+      { name: "screenshotUrl", type: "string", required: false },
+    ],
+    handler: async () => {
+      setOtpMode(true);
+      return { otpRequested: true };
+    },
+    render: ({ status, args }) => {
+      if (status === "executing" || status === "complete") {
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-sm font-medium">
+              <KeyRound className="w-4 h-4" />
+              OTP verification required — please enter the code below
+            </div>
+            {args?.screenshotUrl && (
+              <img
+                src={args.screenshotUrl as string}
+                alt="OTP page screenshot"
+                className="w-full rounded-lg border border-border"
+              />
+            )}
+          </div>
+        );
+      }
+      return null;
+    },
+  });
+
+  useCopilotAction({
+    name: "uiShowScreenshot",
+    description: "Display an inline screenshot from the automation",
+    parameters: [
+      { name: "screenshotUrl", type: "string", required: true },
+      { name: "caption", type: "string", required: false },
+    ],
+    handler: async () => {
+      return { displayed: true };
+    },
+    render: ({ args }) => {
+      if (!args?.screenshotUrl) return null;
+      return (
+        <div className="space-y-1">
+          <img
+            src={args.screenshotUrl as string}
+            alt={args.caption as string || "Automation screenshot"}
+            className="w-full rounded-lg border border-border"
+          />
+          {args.caption && (
+            <p className="text-xs text-muted-foreground">{args.caption as string}</p>
+          )}
+        </div>
+      );
+    },
+  });
+
+  useCopilotAction({
+    name: "uiTrackRunParams",
+    description: "Track run parameters for Run Again functionality",
+    parameters: [
+      { name: "daysBack", type: "number", required: true },
+    ],
+    handler: async ({ daysBack }) => {
+      setLastRunParams({ daysBack: daysBack as number });
+      return { tracked: true };
     },
   });
 
@@ -138,17 +248,73 @@ export default function Home() {
       </div>
 
       <div className="flex-1 overflow-hidden px-4 pb-4">
-        <div className="h-full rounded-2xl border border-border overflow-hidden bg-card/30 backdrop-blur-sm">
-          <CopilotChat
-            labels={{
-              title: "CW Recorder Agent",
-              initial:
-                "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the CommonWell portal, extract transaction logs, and analyze errors for you.\n\nTry: *\"Get last 7 days of transaction errors\"*",
-              placeholder: "e.g. Get last 7 days of transaction errors...",
-            }}
-            instructions="You are the CW Recorder agent. When the user asks to fetch transaction data, start with cwStartRun to create a run, then cwCheckSession to check for a saved session, then cwLogin if needed. After authentication, navigate and extract data. Finally, analyze and report errors. Always show screenshots when available."
-            className="h-full"
-          />
+        <div className="h-full rounded-2xl border border-border overflow-hidden bg-card/30 backdrop-blur-sm flex flex-col">
+          <div className="flex-1 overflow-hidden">
+            <CopilotChat
+              labels={{
+                title: "CW Recorder Agent",
+                initial:
+                  "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the CommonWell portal, extract transaction logs, and analyze errors for you.\n\nTry: *\"Get last 7 days of transaction errors\"*",
+                placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of transaction errors...",
+              }}
+              instructions="You are the CW Recorder agent. When the user asks to fetch transaction data, start with cwStartRun to create a run, then cwCheckSession to check for a saved session, then cwLogin if needed. If OTP is needed, call the uiRequestOtp frontend action to show the OTP input, then wait for the user to provide the code. After authentication, call uiSwitchToNavigator to hand off. Navigate and extract data, then call uiSwitchToReporter. Finally, analyze and report errors, then call uiReportComplete. When showing screenshots, use the uiShowScreenshot action. Also call uiTrackRunParams with the daysBack value for Run Again."
+              className="h-full"
+            />
+          </div>
+
+          <AnimatePresence>
+            {otpMode && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="border-t border-border bg-card/80 backdrop-blur-sm p-4"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <KeyRound className="w-4 h-4 text-yellow-400" />
+                  <span className="text-sm font-medium text-yellow-400">Enter Verification Code</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={otpValue}
+                    onChange={(e) => setOtpValue(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleOtpSubmit()}
+                    placeholder="Enter OTP code..."
+                    autoFocus
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                    disabled={otpSubmitting}
+                  />
+                  <button
+                    onClick={handleOtpSubmit}
+                    disabled={otpSubmitting || !otpValue.trim()}
+                    className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {otpSubmitting ? "Submitting..." : "Submit OTP"}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {runComplete && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="border-t border-border bg-card/80 backdrop-blur-sm p-4"
+              >
+                <button
+                  onClick={handleRunAgain}
+                  className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Run Again{lastRunParams ? ` (${lastRunParams.daysBack} days)` : ""}
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </div>

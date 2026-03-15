@@ -1,13 +1,15 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { db, cwSessions, cwRuns } from "@workspace/db";
+import type { CwTransactionRecord, CwRunStep } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { mkdirSync, existsSync } from "fs";
 import path from "path";
 
 const SCREENSHOTS_DIR = "/tmp/cw-screenshots";
 const PORTAL_URL = "https://integration.commonwellalliance.lkopera.com/";
 const DEFAULT_TIMEOUT = 60000;
+const ESCALATED_TIMEOUT = 120000;
 const SESSION_MAX_AGE_HOURS = parseInt(process.env.SESSION_MAX_AGE_HOURS || "24", 10);
 
 if (!existsSync(SCREENSHOTS_DIR)) {
@@ -17,19 +19,32 @@ if (!existsSync(SCREENSHOTS_DIR)) {
 interface RetryOptions {
   maxAttempts?: number;
   backoffMs?: number;
+  escalateTimeout?: boolean;
+  reloadOnStale?: boolean;
+  page?: Page;
   onRetry?: (attempt: number, error: Error) => void;
 }
 
 export async function withRetry<T>(
-  fn: () => Promise<T>,
+  fn: (attempt: number) => Promise<T>,
   opts: RetryOptions = {}
 ): Promise<T> {
-  const { maxAttempts = 3, backoffMs = 1000, onRetry } = opts;
+  const {
+    maxAttempts = 3,
+    backoffMs = 1000,
+    escalateTimeout = false,
+    reloadOnStale = false,
+    page,
+    onRetry,
+  } = opts;
   let lastError: Error = new Error("Unknown error");
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await fn();
+      if (escalateTimeout && attempt > 1 && page) {
+        page.setDefaultTimeout(ESCALATED_TIMEOUT);
+      }
+      return await fn(attempt);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       const isStaleElement =
@@ -51,22 +66,28 @@ export async function withRetry<T>(
         console.log(
           `[PlaywrightService] Retry ${attempt}/${maxAttempts} after ${delay}ms: ${lastError.message.substring(0, 100)}`
         );
+
+        if (reloadOnStale && isStaleElement && page && !page.isClosed()) {
+          console.log("[PlaywrightService] Stale element detected — reloading page...");
+          try {
+            await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
+            await page.waitForTimeout(2000);
+          } catch (reloadErr) {
+            console.warn("[PlaywrightService] Page reload failed:", (reloadErr as Error).message);
+          }
+        }
+
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw lastError;
+    } finally {
+      if (escalateTimeout && attempt > 1 && page) {
+        page.setDefaultTimeout(DEFAULT_TIMEOUT);
+      }
     }
   }
   throw lastError;
-}
-
-export function takeScreenshot(page: Page, label: string): string {
-  const filename = `${label}-${Date.now()}.png`;
-  const filepath = path.join(SCREENSHOTS_DIR, filename);
-  page.screenshot({ path: filepath, fullPage: true }).catch((err) => {
-    console.error(`[PlaywrightService] Screenshot failed (${label}):`, err.message);
-  });
-  return `/api/screenshots/${filename}`;
 }
 
 export async function takeScreenshotAsync(page: Page, label: string): Promise<string> {
@@ -80,11 +101,44 @@ export async function takeScreenshotAsync(page: Page, label: string): Promise<st
   return `/api/screenshots/${filename}`;
 }
 
+interface SessionData {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+  }>;
+  storageState: {
+    cookies: Array<{
+      name: string;
+      value: string;
+      domain: string;
+      path: string;
+      expires: number;
+      httpOnly: boolean;
+      secure: boolean;
+      sameSite: "Strict" | "Lax" | "None";
+    }>;
+    origins: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+  };
+}
+
+type RunPhase = "idle" | "authenticating" | "authenticated" | "navigating" | "extracted" | "reporting" | "complete" | "error";
+
 export class PlaywrightService {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private runId: string | null = null;
+  private currentPhase: RunPhase = "idle";
+  private lastCheckpointUrl: string | null = null;
 
   async ensureBrowser(): Promise<Browser> {
     if (this.browser && this.browser.isConnected()) {
@@ -104,8 +158,35 @@ export class PlaywrightService {
     return this.browser;
   }
 
+  async recoverFromCrash(): Promise<boolean> {
+    console.log(`[PlaywrightService] Attempting crash recovery (phase: ${this.currentPhase})...`);
+    try {
+      this.browser = null;
+      this.context = null;
+      this.page = null;
+
+      const page = await this.getPage();
+
+      if (this.lastCheckpointUrl) {
+        console.log(`[PlaywrightService] Navigating back to checkpoint: ${this.lastCheckpointUrl}`);
+        await page.goto(this.lastCheckpointUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      }
+
+      await this.addRunStep({ type: "error", content: "Browser crash detected — recovered and resumed" });
+      return true;
+    } catch (err) {
+      console.error("[PlaywrightService] Crash recovery failed:", (err as Error).message);
+      return false;
+    }
+  }
+
   async getPage(): Promise<Page> {
     if (this.page && !this.page.isClosed()) {
+      if (!this.browser || !this.browser.isConnected()) {
+        const recovered = await this.recoverFromCrash();
+        if (!recovered) throw new Error("Browser crashed and recovery failed");
+        return this.page!;
+      }
       return this.page;
     }
     const browser = await this.ensureBrowser();
@@ -123,7 +204,7 @@ export class PlaywrightService {
     if (!this.context) return;
     const cookies = await this.context.cookies();
     const storageState = await this.context.storageState();
-    const sessionData = { cookies, storageState };
+    const sessionData: SessionData = { cookies, storageState };
     const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 60 * 60 * 1000);
     const id = `session-${username}`;
 
@@ -151,7 +232,7 @@ export class PlaywrightService {
     }
 
     try {
-      const data = session.sessionData as { cookies: any[]; storageState: any };
+      const data = session.sessionData as SessionData;
       const browser = await this.ensureBrowser();
       this.context = await browser.newContext({
         storageState: data.storageState,
@@ -185,6 +266,7 @@ export class PlaywrightService {
         console.log("[PlaywrightService] Session invalid — redirected to login");
         return false;
       }
+      this.lastCheckpointUrl = url;
       console.log("[PlaywrightService] Session valid — portal loaded");
       return true;
     } catch {
@@ -194,11 +276,11 @@ export class PlaywrightService {
 
   async login(username: string, password: string): Promise<{ needsOtp: boolean; screenshotUrl: string }> {
     const page = await this.getPage();
+    this.currentPhase = "authenticating";
 
     return withRetry(
       async () => {
         await page.goto(PORTAL_URL, { waitUntil: "networkidle", timeout: 60000 });
-        const screenshotLogin = await takeScreenshotAsync(page, "login-page");
 
         const usernameInput = page.locator('input[type="email"], input[name="username"], input[name="email"], #username, #email');
         const passwordInput = page.locator('input[type="password"]');
@@ -222,12 +304,15 @@ export class PlaywrightService {
           (await page.getByText("OTP").count()) > 0;
 
         const screenshotUrl = await takeScreenshotAsync(page, needsOtp ? "otp-required" : "post-login");
+        this.lastCheckpointUrl = page.url();
 
         return { needsOtp, screenshotUrl };
       },
       {
         maxAttempts: 2,
         backoffMs: 2000,
+        escalateTimeout: true,
+        page,
         onRetry: (attempt, err) =>
           console.warn(`[PlaywrightService] Login retry ${attempt}: ${err.message}`),
       }
@@ -255,19 +340,25 @@ export class PlaywrightService {
         (await page.$('input[name="code"]')) !== null;
 
       const screenshotUrl = await takeScreenshotAsync(page, stillOnOtpPage ? "otp-failed" : "otp-success");
+      if (!stillOnOtpPage) {
+        this.lastCheckpointUrl = page.url();
+        this.currentPhase = "authenticated";
+      }
 
       return { success: !stillOnOtpPage, screenshotUrl };
-    });
+    }, { page, reloadOnStale: true });
   }
 
   async navigateToTransactionLogs(): Promise<string> {
     const page = await this.getPage();
+    this.currentPhase = "navigating";
 
     return withRetry(async () => {
       const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
       await page.goto(txUrl, { waitUntil: "networkidle", timeout: 60000 });
+      this.lastCheckpointUrl = page.url();
       return await takeScreenshotAsync(page, "transaction-logs");
-    });
+    }, { page, escalateTimeout: true, reloadOnStale: true });
   }
 
   async applyDateFilter(daysBack: number): Promise<string> {
@@ -302,7 +393,7 @@ export class PlaywrightService {
       }
 
       return await takeScreenshotAsync(page, "date-filter-applied");
-    });
+    }, { page, reloadOnStale: true });
   }
 
   async waitForDataLoaded(): Promise<boolean> {
@@ -329,18 +420,33 @@ export class PlaywrightService {
     return false;
   }
 
-  async extractViaKendoDataSource(maxRecords: number): Promise<any[] | null> {
+  async extractViaKendoDataSource(maxRecords: number): Promise<CwTransactionRecord[] | null> {
     const page = await this.getPage();
 
     try {
-      const records = await page.evaluate((max) => {
-        const grid = (document.querySelector("[data-role='grid']") as any);
-        if (!grid?.kendoGrid) return null;
-        const ds = grid.kendoGrid.dataSource;
+      const records = await page.evaluate((max: number) => {
+        const gridEl = document.querySelector("[data-role='grid']") as HTMLElement & {
+          kendoGrid?: {
+            dataSource: {
+              data(): Array<Record<string, string>>;
+            };
+          };
+        };
+        if (!gridEl?.kendoGrid) return null;
+        const ds = gridEl.kendoGrid.dataSource;
         if (!ds) return null;
         const allData = ds.data();
-        const results: any[] = [];
-        for (let i = 0; i < Math.min(allData.length, max || allData.length); i++) {
+        const results: Array<{
+          timestamp: string;
+          transactionId: string;
+          transactionType: string;
+          memberName: string;
+          initiatingOrgId: string;
+          duration: string;
+          status: string;
+        }> = [];
+        const limit = max > 0 ? Math.min(allData.length, max) : allData.length;
+        for (let i = 0; i < limit; i++) {
           const item = allData[i];
           results.push({
             timestamp: item.Timestamp || item.timestamp || "",
@@ -365,16 +471,24 @@ export class PlaywrightService {
     return null;
   }
 
-  async extractViaDOMPagination(maxRecords: number): Promise<any[]> {
+  async extractViaDOMPagination(maxRecords: number): Promise<CwTransactionRecord[]> {
     const page = await this.getPage();
-    const allTransactions: any[] = [];
+    const allTransactions: CwTransactionRecord[] = [];
     let pageNum = 1;
 
     while (true) {
       const pageTransactions = await withRetry(async () => {
         return page.evaluate(() => {
           const rows = document.querySelectorAll(".k-grid-content table tbody tr");
-          const txns: any[] = [];
+          const txns: Array<{
+            timestamp: string;
+            transactionId: string;
+            transactionType: string;
+            memberName: string;
+            initiatingOrgId: string;
+            duration: string;
+            status: string;
+          }> = [];
           rows.forEach((row) => {
             const cells = row.querySelectorAll("td");
             if (cells.length >= 7) {
@@ -391,7 +505,7 @@ export class PlaywrightService {
           });
           return txns;
         });
-      });
+      }, { page, reloadOnStale: true });
 
       console.log(`[PlaywrightService] Page ${pageNum}: ${pageTransactions.length} transactions`);
       allTransactions.push(...pageTransactions);
@@ -405,8 +519,10 @@ export class PlaywrightService {
       const hasNext = (await nextButton.count()) > 0 && !(await nextButton.isDisabled().catch(() => true));
       if (!hasNext) break;
 
-      await nextButton.click();
-      await page.waitForTimeout(2000);
+      await withRetry(async () => {
+        await nextButton.click();
+        await page.waitForTimeout(2000);
+      }, { page, reloadOnStale: true });
       pageNum++;
     }
 
@@ -414,9 +530,10 @@ export class PlaywrightService {
   }
 
   async extractTransactions(maxRecords: number = 0): Promise<{
-    records: any[];
+    records: CwTransactionRecord[];
     screenshotUrl: string;
   }> {
+    this.currentPhase = "navigating";
     let records = await this.extractViaKendoDataSource(maxRecords);
     if (!records) {
       records = await this.extractViaDOMPagination(maxRecords);
@@ -424,6 +541,7 @@ export class PlaywrightService {
 
     const page = await this.getPage();
     const screenshotUrl = await takeScreenshotAsync(page, "extraction-complete");
+    this.currentPhase = "extracted";
 
     return { records, screenshotUrl };
   }
@@ -439,6 +557,8 @@ export class PlaywrightService {
       screenshotUrls: [],
     });
     this.runId = runId;
+    this.currentPhase = "idle";
+    this.lastCheckpointUrl = null;
     return runId;
   }
 
@@ -446,13 +566,16 @@ export class PlaywrightService {
     status: string;
     recordCount: number;
     errorCount: number;
-    records: any[];
-    steps: any[];
+    records: CwTransactionRecord[];
+    steps: CwRunStep[];
     screenshotUrls: string[];
     report: string;
     completedAt: Date;
   }>): Promise<void> {
     if (!this.runId) return;
+    if (updates.status) {
+      this.currentPhase = updates.status as RunPhase;
+    }
     await db.update(cwRuns).set(updates).where(eq(cwRuns.id, this.runId));
   }
 
@@ -460,9 +583,14 @@ export class PlaywrightService {
     if (!this.runId) return;
     const run = await db.select().from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
     if (!run[0]) return;
-    const currentSteps = (run[0].steps as any[]) || [];
+    const currentSteps = (run[0].steps as CwRunStep[]) || [];
     const currentScreenshots = (run[0].screenshotUrls as string[]) || [];
-    const newStep = { ...step, timestamp: new Date().toISOString() };
+    const newStep: CwRunStep = {
+      type: step.type as CwRunStep["type"],
+      content: step.content,
+      screenshotUrl: step.screenshotUrl,
+      timestamp: new Date().toISOString(),
+    };
     const newScreenshots = step.screenshotUrl
       ? [...currentScreenshots, step.screenshotUrl]
       : currentScreenshots;
@@ -474,6 +602,10 @@ export class PlaywrightService {
 
   getRunId(): string | null {
     return this.runId;
+  }
+
+  getCurrentPhase(): RunPhase {
+    return this.currentPhase;
   }
 
   async close(): Promise<void> {

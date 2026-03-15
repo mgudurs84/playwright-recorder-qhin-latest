@@ -6,6 +6,7 @@ import { BuiltInAgent, defineTool } from "@copilotkit/runtime/v2";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { z } from "zod";
 import { db, cwRuns } from "@workspace/db";
+import type { CwTransactionRecord } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -37,6 +38,42 @@ function loadCwSkill(filename: string): SkillDef {
   const filePath = join(import.meta.dirname, "..", "skills", filename);
   const raw = readFileSync(filePath, "utf8");
   return yaml.load(raw) as SkillDef;
+}
+
+function groupTransactionsByStatus(records: CwTransactionRecord[]): {
+  totalRecords: number;
+  errorCount: number;
+  statusBreakdown: Record<string, number>;
+  errorsByType: Record<string, CwTransactionRecord[]>;
+  errorsByOrg: Record<string, number>;
+} {
+  const statusBreakdown: Record<string, number> = {};
+  const errorsByType: Record<string, CwTransactionRecord[]> = {};
+  const errorsByOrg: Record<string, number> = {};
+  let errorCount = 0;
+
+  for (const record of records) {
+    const status = record.status?.toLowerCase() || "unknown";
+    statusBreakdown[status] = (statusBreakdown[status] || 0) + 1;
+
+    if (status.includes("error") || status.includes("fail")) {
+      errorCount++;
+      const txType = record.transactionType || "Unknown";
+      if (!errorsByType[txType]) errorsByType[txType] = [];
+      errorsByType[txType].push(record);
+
+      const org = record.initiatingOrgId || "Unknown";
+      errorsByOrg[org] = (errorsByOrg[org] || 0) + 1;
+    }
+  }
+
+  return {
+    totalRecords: records.length,
+    errorCount,
+    statusBreakdown,
+    errorsByType,
+    errorsByOrg,
+  };
 }
 
 const cwStartRunTool = defineTool({
@@ -89,7 +126,7 @@ const cwLoginTool = defineTool({
       const result = await pw.login(username, password);
       await pw.addRunStep({
         type: "authenticating",
-        content: result.needsOtp ? "Login submitted — OTP required" : "Login successful",
+        content: result.needsOtp ? "Login submitted — OTP required. Please provide the verification code." : "Login successful",
         screenshotUrl: result.screenshotUrl,
       });
       return { success: true, ...result };
@@ -103,7 +140,7 @@ const cwLoginTool = defineTool({
 
 const cwSubmitOtpTool = defineTool({
   name: "cwSubmitOtp",
-  description: "Submit the OTP verification code to complete login.",
+  description: "Submit the OTP verification code to complete login. The user must provide this code from their email/SMS.",
   parameters: z.object({
     otp: z.string().describe("The one-time verification code from the user"),
   }),
@@ -204,25 +241,24 @@ const cwExtractTransactionsTool = defineTool({
     const pw = getPlaywrightService();
     try {
       const { records, screenshotUrl } = await pw.extractTransactions(maxRecords);
-      const errorRecords = records.filter(
-        (r: any) => r.status && r.status.toLowerCase().includes("error")
-      );
+      const grouped = groupTransactionsByStatus(records);
 
       await pw.updateRun({
         records,
         recordCount: records.length,
-        errorCount: errorRecords.length,
+        errorCount: grouped.errorCount,
       });
       await pw.addRunStep({
         type: "extracting",
-        content: `Extracted ${records.length} transactions (${errorRecords.length} errors)`,
+        content: `Extracted ${records.length} transactions (${grouped.errorCount} errors)`,
         screenshotUrl,
       });
 
       return {
         success: true,
         totalRecords: records.length,
-        errorCount: errorRecords.length,
+        errorCount: grouped.errorCount,
+        statusBreakdown: grouped.statusBreakdown,
         screenshotUrl,
       };
     } catch (err) {
@@ -247,7 +283,7 @@ const cwNavigationCompleteTool = defineTool({
 
 const cwGetRunDataTool = defineTool({
   name: "cwGetRunData",
-  description: "Retrieve the extracted transaction records for analysis.",
+  description: "Retrieve the extracted transaction records for analysis, with pre-computed groupings by status, error type, and organization.",
   parameters: z.object({
     runId: z.string().describe("The automation run ID"),
   }),
@@ -255,16 +291,22 @@ const cwGetRunDataTool = defineTool({
     const run = await db.select().from(cwRuns).where(eq(cwRuns.id, runId)).limit(1);
     if (!run[0]) return { error: "Run not found" };
 
-    const records = (run[0].records as any[]) || [];
-    const errorRecords = records.filter(
-      (r: any) => r.status && r.status.toLowerCase().includes("error")
-    );
+    const records = (run[0].records as CwTransactionRecord[]) || [];
+    const grouped = groupTransactionsByStatus(records);
 
     return {
       runId,
-      totalRecords: records.length,
-      errorCount: errorRecords.length,
-      records,
+      totalRecords: grouped.totalRecords,
+      errorCount: grouped.errorCount,
+      statusBreakdown: grouped.statusBreakdown,
+      errorsByType: Object.fromEntries(
+        Object.entries(grouped.errorsByType).map(([type, recs]) => [
+          type,
+          { count: recs.length, samples: recs.slice(0, 5) },
+        ])
+      ),
+      errorsByOrg: grouped.errorsByOrg,
+      records: records.slice(0, 100),
       parameters: run[0].parameters,
       steps: run[0].steps,
     };
@@ -330,7 +372,7 @@ function buildCwRuntime(): CopilotRuntime {
     const authSkill = loadCwSkill("cw-auth-agent.yaml");
     authPrompt = authSkill.system_prompt;
   } catch {
-    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, and cwSubmitOtp tools.";
+    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, and cwSubmitOtp tools. When OTP is required, ask the user for the verification code and use cwSubmitOtp.";
   }
 
   try {
@@ -344,7 +386,7 @@ function buildCwRuntime(): CopilotRuntime {
     const repSkill = loadCwSkill("cw-reporter-agent.yaml");
     reporterPrompt = repSkill.system_prompt;
   } catch {
-    reporterPrompt = "You are the Reporter Agent. Analyze extracted JSON records and produce an error summary report.";
+    reporterPrompt = "You are the Reporter Agent. Analyze extracted JSON records and produce an error summary report. Use the pre-computed groupings (statusBreakdown, errorsByType, errorsByOrg) to build your analysis.";
   }
 
   const authAgent = new BuiltInAgent({
