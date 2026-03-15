@@ -254,7 +254,7 @@ export default function Home() {
 
       <div className="flex-1 overflow-hidden px-4 pb-4">
         <div className="h-full rounded-2xl border border-border overflow-hidden bg-card/30 backdrop-blur-sm flex flex-col">
-          <div className="flex-1 overflow-hidden">
+          <div className={`flex-1 overflow-hidden ${otpMode ? "copilot-otp-mode" : ""}`}>
             <CopilotChat
               labels={{
                 title: "CW Recorder Agent",

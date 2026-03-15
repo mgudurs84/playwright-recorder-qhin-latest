@@ -79,3 +79,12 @@
 .glass-panel {
   @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl;
 }
+
+.copilot-otp-mode textarea,
+.copilot-otp-mode [data-copilotkit-input],
+.copilot-otp-mode form:has(textarea) {
+  display: none !important;
+}
+.copilot-otp-mode > div > div:last-child:has(textarea) {
+  display: none !important;
+}
