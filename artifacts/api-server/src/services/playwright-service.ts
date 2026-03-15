@@ -196,6 +196,13 @@ export class PlaywrightService {
       this.context = null;
       this.page = null;
 
+      // If the run already completed, just reset cleanly — no need to restore session
+      if (this.currentPhase === "complete" || this.currentPhase === "idle") {
+        console.log(`[PlaywrightService] Run ${this.currentPhase} — resetting for fresh start`);
+        this.currentPhase = "idle";
+        return true;
+      }
+
       const resumeUrl = this.lastCheckpoint?.url || this.lastCheckpointUrl;
 
       const username = process.env.CW_USERNAME;
@@ -330,7 +337,20 @@ export class PlaywrightService {
     return withRetry(
       async () => {
         await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-        await page.waitForSelector('#UserName, input[name="UserName"], input[name="username"], input[type="email"]', { timeout: 30000 });
+
+        // Quick check: if session is still valid the portal redirects away from the login page
+        // and #UserName will never appear. Detect this fast (3s) instead of timing out (30s).
+        const hasLoginForm = await page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]')
+          .isVisible({ timeout: 3000 })
+          .catch(() => false);
+
+        if (!hasLoginForm) {
+          console.log("[PlaywrightService] Already authenticated — session still valid, skipping login form");
+          this.currentPhase = "authenticated";
+          const screenshotUrl = await takeScreenshotAsync(page, "already-authenticated");
+          await this.persistCheckpoint(page.url());
+          return { needsOtp: false, screenshotUrl };
+        }
 
         // Portal uses #UserName (type=text) and #Password
         const usernameInput = page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]');
