@@ -169,6 +169,7 @@ const cwLoginTool = defineTool({
       const message = (err as Error).message;
       let screenshotUrl: string | undefined;
       try { const page = await pw.getPage(); screenshotUrl = await takeScreenshotAsync(page, "login-error"); } catch {}
+      try { await pw.updateRun({ status: "error" }); } catch {}
       await pw.addRunStep({ type: "error", content: `Login failed: ${message}`, screenshotUrl });
       return { success: false, needsOtp: false, error: message, screenshotUrl };
     }
@@ -254,6 +255,7 @@ const cwNavigateToTransactionsTool = defineTool({
       const message = (err as Error).message;
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "nav-error"); } catch {}
+      try { await pw.updateRun({ status: "error" }); } catch {}
       await pw.addRunStep({ type: "error", content: `Navigation failed: ${message}`, screenshotUrl: errScreenshot });
       return { success: false, error: message, screenshotUrl: errScreenshot };
     }
@@ -286,6 +288,7 @@ const cwApplyDateFilterTool = defineTool({
     } catch (err) {
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "date-filter-error"); } catch {}
+      try { await pw.updateRun({ status: "error" }); } catch {}
       return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
@@ -344,6 +347,7 @@ const cwExtractTransactionsTool = defineTool({
     } catch (err) {
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "extraction-error"); } catch {}
+      try { await pw.updateRun({ status: "error" }); } catch {}
       return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
