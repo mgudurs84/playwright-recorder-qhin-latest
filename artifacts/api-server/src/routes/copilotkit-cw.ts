@@ -426,7 +426,7 @@ function buildCwRuntime(): CopilotRuntime {
 
   const combinedAgent = new BuiltInAgent({
     model,
-    prompt: "You are the CommonWell Recorder agent. You handle authentication, navigation, and reporting in sequence. Follow the user's instructions precisely and call the tools they specify.",
+    prompt: "You are the CommonWell Recorder agent. You handle authentication, navigation, and reporting in sequence. Follow the user's instructions precisely and call the tools they specify. IMPORTANT: whenever a tool result contains a screenshotUrl field, embed it in your reply as a markdown image so the user can see it: ![screenshot](screenshotUrl). Always show the screenshot inline — do not skip it.",
     tools: [
       cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool,
       cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwSearchByTransactionIdTool, cwExtractTransactionsTool, cwNavigationCompleteTool,
