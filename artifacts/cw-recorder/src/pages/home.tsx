@@ -44,6 +44,13 @@ export default function Home() {
   // Clear stale chat on mount
   useLayoutEffect(() => { reset(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // On mount: restore runComplete if server already has a report (e.g. after page refresh)
+  useEffect(() => {
+    fetch(apiUrl("/api/cw/report"), { method: "HEAD" }).then(res => {
+      if (res.ok) setRunComplete(true);
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Show OTP panel when agent text mentions a code/verification
   useEffect(() => {
     if (phase !== "idle" && phase !== "authenticating" && phase !== "waitingForOtp") return;
