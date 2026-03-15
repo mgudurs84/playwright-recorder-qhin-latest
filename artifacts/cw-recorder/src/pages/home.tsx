@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
-import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw } from "lucide-react";
+import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AgentStepper } from "@/components/agent-stepper";
 import { apiUrl } from "@/lib/utils";
@@ -20,7 +20,7 @@ function phaseToInstructions(phase: string, daysBack: number): string {
     return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${daysBack}), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
   }
   if (phase === "extracted" || phase === "complete") {
-    return "You are the CW Reporter. IMMEDIATELY call cwGetRunData. Analyze errors. Call cwSaveReport(report) with your full markdown analysis. Then call uiReportComplete(report).";
+    return "You are the CW Reporter. IMMEDIATELY call cwGetRunData. Analyze errors. Call cwSaveReport(report) with your full markdown analysis. Do NOT call any other tools after cwSaveReport.";
   }
   return "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession — if valid, call cwAuthComplete(daysBack) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack). STOP.";
 }
@@ -126,19 +126,6 @@ export default function Home() {
   }, [daysBack, appendMessage, reset]);
 
   useCopilotAction({
-    name: "uiReportComplete",
-    description: "Called when the report is saved and the run is complete",
-    parameters: [{ name: "report", type: "string", required: true }],
-    handler: async () => { setRunComplete(true); return { complete: true }; },
-    render: ({ status }) => status === "complete" ? (
-      <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium">
-        <span className="w-2 h-2 rounded-full bg-emerald-500" />
-        Report saved successfully
-      </div>
-    ) : <></>,
-  });
-
-  useCopilotAction({
     name: "uiShowScreenshot",
     description: "Display an inline screenshot from the automation",
     parameters: [
@@ -237,8 +224,16 @@ export default function Home() {
 
           <AnimatePresence>
             {runComplete && (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4">
-                <button onClick={handleRunAgain} className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors">
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4 flex gap-2">
+                <a
+                  href={apiUrl("/api/cw/report")}
+                  download
+                  className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  Download Report
+                </a>
+                <button onClick={handleRunAgain} className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors">
                   <RotateCcw className="w-4 h-4" />
                   Run Again ({daysBack} days)
                 </button>

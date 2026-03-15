@@ -6,7 +6,7 @@ import { BuiltInAgent, defineTool } from "@copilotkit/runtime/v2";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { z } from "zod";
 import type { CwTransactionRecord } from "@workspace/db";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import yaml from "js-yaml";
 import type { Express } from "express";
@@ -126,6 +126,7 @@ interface CwSessionState {
   recordCount: number;
   errorCount: number;
   report: string | null;
+  reportFile: string | null;
 }
 
 let cwSession: CwSessionState = {
@@ -135,6 +136,7 @@ let cwSession: CwSessionState = {
   recordCount: 0,
   errorCount: 0,
   report: null,
+  reportFile: null,
 };
 
 function resetCwSession(daysBack = 7): void {
@@ -145,7 +147,20 @@ function resetCwSession(daysBack = 7): void {
     recordCount: 0,
     errorCount: 0,
     report: null,
+    reportFile: null,
   };
+}
+
+const REPORT_DIR = "/tmp/cw-reports";
+
+function saveReportToFile(report: string): string {
+  try {
+    mkdirSync(REPORT_DIR, { recursive: true });
+  } catch {}
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const filePath = `${REPORT_DIR}/cw-report-${ts}.md`;
+  writeFileSync(filePath, report, "utf-8");
+  return filePath;
 }
 
 const cwCheckSessionTool = defineTool({
@@ -361,12 +376,14 @@ const cwSaveReportTool = defineTool({
   }),
   execute: async ({ report }) => {
     cwSession.report = report;
+    const filePath = saveReportToFile(report);
+    cwSession.reportFile = filePath;
     cwSession.phase = "complete";
     const pw = getPlaywrightService();
     pw.setPhase("complete");
     await pw.close();
-    console.log("[CW] Report saved. Run complete.");
-    return { success: true };
+    console.log(`[CW] Report saved. File: ${filePath}. Run complete.`);
+    return { success: true, filePath };
   },
 });
 
@@ -454,5 +471,16 @@ export function registerCwStatusRoute(app: Express) {
     resetCwSession();
     console.log("[CW] Browser closed and session reset");
     res.json({ success: true });
+  });
+
+  app.get("/api/cw/report", (_req, res) => {
+    if (!cwSession.report) {
+      res.status(404).json({ error: "No report available" });
+      return;
+    }
+    const ts = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="cw-report-${ts}.md"`);
+    res.send(cwSession.report);
   });
 }
