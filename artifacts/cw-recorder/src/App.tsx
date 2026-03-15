@@ -13,7 +13,7 @@ import { CwAgentProvider, useActiveCwAgent } from "@/contexts/agent-context";
 const queryClient = new QueryClient();
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-const CW_COPILOTKIT_URL = "/api/cw-copilotkit";
+const CW_COPILOTKIT_URL = `${BASE}/api/cw-copilotkit`;
 
 function Router() {
   return (

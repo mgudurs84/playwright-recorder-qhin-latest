@@ -53,7 +53,8 @@ export default function RunDetail() {
     if (!id) return;
     const fetchRun = async () => {
       try {
-        const res = await fetch(`/api/cw/runs/${id}`);
+        const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+        const res = await fetch(`${base}/api/cw/runs/${id}`);
         if (res.ok) setRun(await res.json());
       } catch {
       } finally {

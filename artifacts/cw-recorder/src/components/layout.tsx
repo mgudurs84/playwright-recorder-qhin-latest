@@ -33,7 +33,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     const fetchRuns = async () => {
       try {
-        const res = await fetch("/api/cw/runs");
+        const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+        const res = await fetch(`${base}/api/cw/runs`);
         if (res.ok) {
           const data = await res.json();
           setRuns(data.runs || []);
