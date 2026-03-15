@@ -174,21 +174,21 @@ function buildRuntime(): CopilotRuntime {
 
   const plannerAgent = new BuiltInAgent({
     model,
-    systemPrompt: plannerCfg?.systemPrompt ?? "",
+    prompt: plannerCfg?.systemPrompt ?? "",
     tools: [startResearchTool, addResearchStepTool, completePlanningTool],
     maxSteps: 10,
   });
 
   const searcherAgent = new BuiltInAgent({
     model,
-    systemPrompt: searcherCfg?.systemPrompt ?? "",
+    prompt: searcherCfg?.systemPrompt ?? "",
     tools: [addResearchStepTool, pauseResearchTool, completeSearchingTool, getResearchSessionTool],
     maxSteps: 20,
   });
 
   const synthesizerAgent = new BuiltInAgent({
     model,
-    systemPrompt: synthesizerCfg?.systemPrompt ?? "",
+    prompt: synthesizerCfg?.systemPrompt ?? "",
     tools: [addResearchStepTool, getResearchSessionTool],
     maxSteps: 10,
   });
@@ -224,13 +224,12 @@ function getHandler(): ReturnType<typeof copilotRuntimeNodeHttpEndpoint> {
 const COPILOTKIT_PATH = "/api/copilotkit";
 
 export function registerCopilotKitRoute(app: Express) {
-  app.use(COPILOTKIT_PATH, (req, res, next) => {
+  app.use(COPILOTKIT_PATH, (req, res) => {
     const originalUrl = req.url;
     const restoredUrl = COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
     console.log(`[CK] ${req.method} ${restoredUrl} body.method=${(req.body as Record<string, unknown>)?.method ?? "n/a"}`);
     req.url = restoredUrl;
-    // Always use the current handler — hot-reload safe
-    getHandler()(req, res, next);
+    getHandler()(req, res);
   });
 }
 

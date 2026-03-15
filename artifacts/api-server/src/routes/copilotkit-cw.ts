@@ -212,10 +212,11 @@ const cwAuthCompleteTool = defineTool({
   name: "cwAuthComplete",
   description: "Signal that authentication is complete and the Navigator should take over.",
   parameters: z.object({
-    runId: z.string().describe("The automation run ID"),
+    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
   }),
-  execute: async ({ runId }) => {
+  execute: async ({ runId: providedRunId }) => {
     const pw = getPlaywrightService();
+    const runId = providedRunId || pw.getRunId();
     await pw.updateRun({ status: "authenticated" });
     await pw.addRunStep({ type: "authenticating", content: "Authentication complete" });
     return { success: true, runId, nextAgent: "cw-navigator" };
@@ -331,10 +332,11 @@ const cwNavigationCompleteTool = defineTool({
   name: "cwNavigationComplete",
   description: "Signal that navigation and extraction are complete. The Reporter should take over.",
   parameters: z.object({
-    runId: z.string().describe("The automation run ID"),
+    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
   }),
-  execute: async ({ runId }) => {
+  execute: async ({ runId: providedRunId }) => {
     const pw = getPlaywrightService();
+    const runId = providedRunId || pw.getRunId();
     await pw.updateRun({ status: "extracted" });
     await pw.addRunStep({ type: "extracting", content: "Extraction complete" });
     return { success: true, runId, nextAgent: "cw-reporter" };
@@ -345,9 +347,12 @@ const cwGetRunDataTool = defineTool({
   name: "cwGetRunData",
   description: "Retrieve the extracted transaction records for analysis, with pre-computed groupings by status, error type, and organization.",
   parameters: z.object({
-    runId: z.string().describe("The automation run ID"),
+    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
   }),
-  execute: async ({ runId }) => {
+  execute: async ({ runId: providedRunId }) => {
+    const pw = getPlaywrightService();
+    const runId = providedRunId || pw.getRunId();
+    if (!runId) return { error: "No active run ID" };
     const run = await db.select().from(cwRuns).where(eq(cwRuns.id, runId)).limit(1);
     if (!run[0]) return { error: "Run not found" };
 
@@ -378,16 +383,18 @@ const cwSaveReportTool = defineTool({
   name: "cwSaveReport",
   description: "Save the analysis report to the run and mark it complete.",
   parameters: z.object({
-    runId: z.string().describe("The automation run ID"),
+    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
     report: z.string().describe("The markdown analysis report"),
   }),
-  execute: async ({ runId, report }) => {
+  execute: async ({ runId: providedRunId, report }) => {
+    const pw = getPlaywrightService();
+    const runId = providedRunId || pw.getRunId();
+    if (!runId) return { error: "No active run ID" };
     await db
       .update(cwRuns)
       .set({ report, status: "complete", completedAt: new Date() })
       .where(eq(cwRuns.id, runId));
 
-    const pw = getPlaywrightService();
     await pw.addRunStep({ type: "complete", content: "Report saved" });
     await pw.close();
 
@@ -452,21 +459,21 @@ function buildCwRuntime(): CopilotRuntime {
 
   const authAgent = new BuiltInAgent({
     model,
-    systemPrompt: authPrompt,
+    prompt: authPrompt,
     tools: [cwStartRunTool, cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool],
     maxSteps: 10,
   });
 
   const navigatorAgent = new BuiltInAgent({
     model,
-    systemPrompt: navigatorPrompt,
+    prompt: navigatorPrompt,
     tools: [cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwExtractTransactionsTool, cwNavigationCompleteTool],
     maxSteps: 15,
   });
 
   const reporterAgent = new BuiltInAgent({
     model,
-    systemPrompt: reporterPrompt,
+    prompt: reporterPrompt,
     tools: [cwGetRunDataTool, cwSaveReportTool, cwListRunsTool],
     maxSteps: 10,
   });
@@ -513,7 +520,7 @@ export function registerCwCopilotKitRoute(app: Express) {
     });
   });
 
-  app.use(CW_COPILOTKIT_PATH, (req, res, next) => {
+  app.use(CW_COPILOTKIT_PATH, (req, res) => {
     const handler = getCwHandler();
     if (!handler) {
       res.status(503).json({ error: "CW CopilotKit runtime not available. Check GCP_SERVICE_ACCOUNT_JSON configuration." });
@@ -523,7 +530,7 @@ export function registerCwCopilotKitRoute(app: Express) {
     const restoredUrl = CW_COPILOTKIT_PATH + (originalUrl === "/" ? "" : originalUrl);
     console.log(`[CW-CK] ${req.method} ${restoredUrl}`);
     req.url = restoredUrl;
-    handler(req, res, next);
+    handler(req, res);
   });
 }
 

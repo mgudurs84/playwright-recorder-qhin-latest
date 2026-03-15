@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
+import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
 import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useActiveCwAgent } from "@/contexts/agent-context";
@@ -26,11 +27,13 @@ export default function Home() {
     if (!otpValue.trim()) return;
     setOtpSubmitting(true);
     try {
-      await appendMessage({
-        id: `otp-${Date.now()}`,
-        role: "user",
-        content: `My OTP code is: ${otpValue.trim()}`,
-      });
+      await appendMessage(
+        new TextMessage({
+          id: `otp-${Date.now()}`,
+          role: MessageRole.User,
+          content: `My OTP code is: ${otpValue.trim()}`,
+        })
+      );
       setOtpValue("");
       setOtpMode(false);
     } finally {
@@ -43,11 +46,13 @@ export default function Home() {
     setRunComplete(false);
     setOtpMode(false);
     const days = lastRunParams?.daysBack ?? 7;
-    await appendMessage({
-      id: `rerun-${Date.now()}`,
-      role: "user",
-      content: `Run again — get the last ${days} days of transaction errors`,
-    });
+    await appendMessage(
+      new TextMessage({
+        id: `rerun-${Date.now()}`,
+        role: MessageRole.User,
+        content: `Run again — get the last ${days} days of transaction errors`,
+      })
+    );
   }, [lastRunParams, setActiveAgent, appendMessage]);
 
   useCopilotAction({
@@ -70,7 +75,7 @@ export default function Home() {
           </div>
         );
       }
-      return null;
+      return <></>;
     },
   });
 
@@ -93,7 +98,7 @@ export default function Home() {
           </div>
         );
       }
-      return null;
+      return <></>;
     },
   });
 
@@ -117,7 +122,7 @@ export default function Home() {
           </div>
         );
       }
-      return null;
+      return <></>;
     },
   });
 
@@ -149,7 +154,7 @@ export default function Home() {
           </div>
         );
       }
-      return null;
+      return <></>;
     },
   });
 
@@ -164,7 +169,7 @@ export default function Home() {
       return { displayed: true };
     },
     render: ({ args }) => {
-      if (!args?.screenshotUrl) return null;
+      if (!args?.screenshotUrl) return <></>;
       return (
         <div className="space-y-1">
           <img

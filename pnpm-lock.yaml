@@ -441,6 +441,9 @@ importers:
       '@copilotkit/react-ui':
         specifier: ^1.54.0
         version: 1.54.0(@ag-ui/core@0.0.47)(@types/mdast@4.0.4)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(graphql@16.13.1)(micromark-util-types@2.0.2)(micromark@4.0.2)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)(signal-polyfill@0.2.2)(zod@3.25.76)
+      '@copilotkit/runtime-client-gql':
+        specifier: ^1.54.0
+        version: 1.54.0(@ag-ui/core@0.0.47)(graphql@16.13.1)(react@19.1.0)
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.14)(react@19.1.0)

@@ -225,18 +225,36 @@ export class PlaywrightService {
       const checkpoint = await this.loadCheckpointFromDb();
       const resumeUrl = checkpoint?.url || this.lastCheckpointUrl;
 
-      const page = await this.createFreshPage();
+      const username = process.env.CW_USERNAME;
+      let sessionRestored = false;
+      if (username) {
+        sessionRestored = await this.loadSessionFromDb(username);
+        if (sessionRestored) {
+          console.log(`[PlaywrightService] Session restored for ${username} during crash recovery`);
+        }
+      }
+
+      if (!sessionRestored) {
+        await this.createFreshPage();
+      }
 
       if (checkpoint?.phase) {
         this.currentPhase = checkpoint.phase;
       }
 
       if (resumeUrl) {
+        const page = await this.getPage();
         console.log(`[PlaywrightService] Navigating back to checkpoint: ${resumeUrl}`);
         await page.goto(resumeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+        const isLoggedIn = await this.validateSession();
+        if (!isLoggedIn) {
+          console.warn(`[PlaywrightService] Session invalid after recovery — auth will need to re-run`);
+          this.currentPhase = "idle";
+        }
       }
 
-      await this.addRunStep({ type: "error", content: `Browser crash detected — recovered and resumed from ${this.currentPhase} phase` });
+      await this.addRunStep({ type: "error", content: `Browser crash detected — recovered${sessionRestored ? " with session" : ""} and resumed from ${this.currentPhase} phase` });
       return true;
     } catch (err) {
       console.error("[PlaywrightService] Crash recovery failed:", (err as Error).message);
