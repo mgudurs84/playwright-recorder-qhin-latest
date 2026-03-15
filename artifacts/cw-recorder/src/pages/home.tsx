@@ -23,11 +23,33 @@ export default function Home() {
   const activeAgentRef = useRef(activeAgent);
   useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
 
-  const { appendMessage, reset } = useCopilotChat({
+  const { messages, appendMessage, reset } = useCopilotChat({
     onSubmitMessage: () => {
       setPollingActive(true);
     },
   });
+
+  // Auto-show OTP input when the auth agent mentions OTP/verification in its reply.
+  // This avoids calling uiRequestOtp as an LLM tool (which leaves dangling tool calls
+  // and causes MissingToolResultsError when the next message is sent).
+  useEffect(() => {
+    if (activeAgent !== "cw-auth" || otpMode) return;
+    const lastAgentMsg = (Array.isArray(messages) ? [...messages] : []).reverse().find(
+      (m) => m.role === MessageRole.Assistant && "content" in m
+    );
+    if (lastAgentMsg && "content" in lastAgentMsg) {
+      const text = (lastAgentMsg.content as string).toLowerCase();
+      if (
+        text.includes("otp") ||
+        text.includes("verification code") ||
+        text.includes("enter the code") ||
+        text.includes("enter your code") ||
+        text.includes("check your email")
+      ) {
+        setOtpMode(true);
+      }
+    }
+  }, [messages, activeAgent, otpMode]);
 
   useLayoutEffect(() => {
     reset();
@@ -178,38 +200,6 @@ export default function Home() {
   });
 
   useCopilotAction({
-    name: "uiRequestOtp",
-    description: "Show the OTP input field when the portal requires a verification code",
-    parameters: [
-      { name: "screenshotUrl", type: "string", required: false },
-    ],
-    handler: async () => {
-      setOtpMode(true);
-      return { otpRequested: true };
-    },
-    render: ({ status, args }) => {
-      if (status === "executing" || status === "complete") {
-        return (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-sm font-medium">
-              <KeyRound className="w-4 h-4" />
-              OTP verification required — please enter the code below
-            </div>
-            {args?.screenshotUrl && (
-              <img
-                src={apiUrl(args.screenshotUrl as string)}
-                alt="OTP page screenshot"
-                className="w-full rounded-lg border border-border"
-              />
-            )}
-          </div>
-        );
-      }
-      return <></>;
-    },
-  });
-
-  useCopilotAction({
     name: "uiShowScreenshot",
     description: "Display an inline screenshot from the automation",
     parameters: [
@@ -239,7 +229,7 @@ export default function Home() {
   // ─── Per-agent instructions ─────────────────────────────────────────────────
   const chatInstructions =
     activeAgent === "cw-auth"
-      ? "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession first — if the session is valid, skip login and call cwAuthComplete(daysBack) immediately. If not, call cwLogin. If OTP is required, call uiRequestOtp then wait for the user to provide the code. When they do, call cwSubmitOtp(otp). After successful authentication call cwAuthComplete(daysBack). Then STOP — the system will automatically switch to the Navigator."
+      ? "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession — if the session is valid, call cwAuthComplete(daysBack) immediately. If not, call cwLogin. If OTP is required, tell the user 'Please enter the verification code sent to your email.' and WAIT for their reply. When they provide the code, call cwSubmitOtp(otp). After authentication succeeds call cwAuthComplete(daysBack). Then STOP — do NOT call any other actions."
       : activeAgent === "cw-navigator"
       ? `You are the CW Navigator agent. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navDaysBack}), then cwExtractTransactions, then cwNavigationComplete. The system will automatically switch to the Reporter. Do NOT call any switch actions.`
       : "You are the CW Reporter agent. IMMEDIATELY call cwGetRunData to retrieve the extracted transactions. Analyze the data for errors across all status/result/code fields. Call cwSaveReport(report) with your full markdown analysis. Then call uiReportComplete(report). Present the complete error analysis to the user.";
