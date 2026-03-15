@@ -358,34 +358,47 @@ export class PlaywrightService {
       async () => {
         await page.goto(PORTAL_URL, { waitUntil: "networkidle", timeout: 60000 });
 
-        const usernameInput = page.locator('input[type="email"], input[name="username"], input[name="email"], #username, #email');
-        const passwordInput = page.locator('input[type="password"]');
+        // Portal uses #UserName (type=text) and #Password
+        const usernameInput = page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]');
+        const passwordInput = page.locator('#Password, input[name="Password"], input[type="password"]');
 
         await usernameInput.first().fill(username);
         await passwordInput.first().fill(password);
 
-        const submitBtn = page.locator(
-          'button[type="submit"], input[type="submit"], button:has-text("Log in"), button:has-text("Sign in")'
-        );
+        // Portal submit button is #btnLogin (type=button, text="Sign in")
+        const submitBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), input[type="submit"]');
         await submitBtn.first().click();
 
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(5000);
 
-        const needsOtp =
-          (await page.$('input[name="otp"]')) !== null ||
-          (await page.$('input[name="code"]')) !== null ||
-          (await page.$('input[name="verificationCode"]')) !== null ||
-          (await page.getByText("verification code").count()) > 0 ||
-          (await page.getByText("one-time").count()) > 0 ||
-          (await page.getByText("OTP").count()) > 0;
+        // Portal OTP page: /Login/UserValidate with #OTP input and #btnSendEmail / #btnSendSMS
+        const onOtpPage =
+          page.url().includes("UserValidate") ||
+          (await page.$('#OTP')) !== null ||
+          (await page.$('#btnSendEmail')) !== null ||
+          (await page.$('#btnSendSMS')) !== null;
 
-        if (needsOtp) {
+        if (onOtpPage) {
           this.currentPhase = "waitingForOtp";
+          // Automatically trigger OTP send via email (no SMS required from user)
+          const sendEmailBtn = page.locator('#btnSendEmail');
+          if ((await sendEmailBtn.count()) > 0) {
+            console.log("[PlaywrightService] Clicking Send OTP (email)...");
+            await sendEmailBtn.click();
+            await page.waitForTimeout(2000);
+          }
+        } else {
+          // Check if we landed on an authenticated page already
+          const isLoggedIn = !page.url().includes("Login") && !page.url().includes("login");
+          if (isLoggedIn) {
+            this.currentPhase = "authenticated";
+          }
         }
-        const screenshotUrl = await takeScreenshotAsync(page, needsOtp ? "otp-required" : "post-login");
+
+        const screenshotUrl = await takeScreenshotAsync(page, onOtpPage ? "otp-required" : "post-login");
         await this.persistCheckpoint(page.url());
 
-        return { needsOtp, screenshotUrl };
+        return { needsOtp: onOtpPage, screenshotUrl };
       },
       {
         maxAttempts: 2,
@@ -402,21 +415,21 @@ export class PlaywrightService {
     const page = await this.getPage();
 
     return withRetry(async () => {
-      const otpInput = page.locator(
-        'input[name="otp"], input[name="code"], input[name="verificationCode"], input[type="tel"][maxlength]'
-      );
+      // Portal OTP input is #OTP (type=text, name="OTP")
+      const otpInput = page.locator('#OTP, input[name="OTP"], input[name="otp"], input[name="code"], input[name="verificationCode"]');
       await otpInput.first().fill(otp);
 
-      const verifyBtn = page.locator(
-        'button[type="submit"], button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm")'
-      );
+      // Portal submit button on OTP page is #btnLogin (type=submit, text="Submit")
+      const verifyBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Submit"), button:has-text("Verify"), button:has-text("Confirm")');
       await verifyBtn.first().click();
 
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(5000);
 
+      // Still on OTP page if URL still contains UserValidate or #OTP is still present
       const stillOnOtpPage =
-        (await page.$('input[name="otp"]')) !== null ||
-        (await page.$('input[name="code"]')) !== null;
+        page.url().includes("UserValidate") ||
+        (await page.$('#OTP')) !== null ||
+        (await page.$('#btnSendEmail')) !== null;
 
       const screenshotUrl = await takeScreenshotAsync(page, stillOnOtpPage ? "otp-failed" : "otp-success");
       if (!stillOnOtpPage) {
