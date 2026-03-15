@@ -329,7 +329,8 @@ export class PlaywrightService {
 
     return withRetry(
       async () => {
-        await page.goto(PORTAL_URL, { waitUntil: "networkidle", timeout: 60000 });
+        await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+        await page.waitForSelector('#UserName, input[name="UserName"], input[name="username"], input[type="email"]', { timeout: 30000 });
 
         // Portal uses #UserName (type=text) and #Password
         const usernameInput = page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]');
