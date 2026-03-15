@@ -49,6 +49,31 @@ interface GroupedAnalysis {
   errorsByHour: Record<string, number>;
 }
 
+const ERROR_PATTERNS = ["error", "fail", "failed", "reject", "rejected", "timeout", "exception", "unavailable", "denied", "unauthorized", "forbidden", "404", "500", "503"];
+
+function isErrorRecord(record: CwTransactionRecord): boolean {
+  // Check the mapped status field
+  const status = record.status?.toLowerCase() || "";
+  if (ERROR_PATTERNS.some(p => status.includes(p))) return true;
+
+  // Check all raw fields for error indicators
+  if (record.raw) {
+    for (const [key, val] of Object.entries(record.raw)) {
+      const lkey = key.toLowerCase();
+      const lval = String(val).toLowerCase();
+      // Skip response-time-like values (e.g., "7185.02ms")
+      if (/^\d+(\.\d+)?ms$/.test(val)) continue;
+      // Look for error patterns in field names or values that look like status fields
+      if (lkey.includes("status") || lkey.includes("result") || lkey.includes("code")) {
+        if (ERROR_PATTERNS.some(p => lval.includes(p))) return true;
+      }
+      // Also check if any field value is literally an error keyword
+      if (ERROR_PATTERNS.some(p => lval === p)) return true;
+    }
+  }
+  return false;
+}
+
 function groupTransactionsByStatus(records: CwTransactionRecord[]): GroupedAnalysis {
   const statusBreakdown: Record<string, number> = {};
   const errorsByType: Record<string, CwTransactionRecord[]> = {};
@@ -57,10 +82,17 @@ function groupTransactionsByStatus(records: CwTransactionRecord[]): GroupedAnaly
   let errorCount = 0;
 
   for (const record of records) {
-    const status = record.status?.toLowerCase() || "unknown";
-    statusBreakdown[status] = (statusBreakdown[status] || 0) + 1;
+    // Use the best available status label
+    const rawStatusVal = record.raw
+      ? Object.entries(record.raw).find(([k]) => /status|result|code/i.test(k))?.[1]
+      : undefined;
+    const displayStatus = (rawStatusVal && !/^\d+(\.\d+)?ms$/.test(rawStatusVal))
+      ? rawStatusVal.toLowerCase()
+      : (record.status?.toLowerCase() || "unknown");
 
-    if (status.includes("error") || status.includes("fail")) {
+    statusBreakdown[displayStatus] = (statusBreakdown[displayStatus] || 0) + 1;
+
+    if (isErrorRecord(record)) {
       errorCount++;
       const txType = record.transactionType || "Unknown";
       if (!errorsByType[txType]) errorsByType[txType] = [];

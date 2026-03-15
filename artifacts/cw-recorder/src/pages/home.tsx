@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
@@ -17,6 +17,15 @@ export default function Home() {
   const [lastRunParams, setLastRunParams] = useState<{ daysBack: number } | null>(null);
   const [navigatorTrigger, setNavigatorTrigger] = useState<{ runId: string; daysBack: number } | null>(null);
   const [reporterTrigger, setReporterTrigger] = useState<string | null>(null);
+  // Persisted run context for instructions (navigatorTrigger is cleared after use)
+  const [navContext, setNavContext] = useState<{ runId: string; daysBack: number } | null>(null);
+  const [repContext, setRepContext] = useState<string | null>(null);
+  // Each agent gets its own thread ID to avoid MissingToolResultsError from cross-agent history
+  const [threadId, setThreadId] = useState(() => `auth-${Date.now()}`);
+
+  // Ref to always access current activeAgent in handlers without stale closures
+  const activeAgentRef = useRef(activeAgent);
+  useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
 
   useEffect(() => {
     setActiveAgent("cw-auth");
@@ -26,33 +35,39 @@ export default function Home() {
 
   const { appendMessage } = useCopilotChat();
 
-  // Auto-trigger navigator after agent switch
+  // Auto-trigger navigator — small delay ensures auth agent thread is fully closed
   useEffect(() => {
     if (activeAgent === "cw-navigator" && navigatorTrigger) {
       const { runId, daysBack } = navigatorTrigger;
       setNavigatorTrigger(null);
-      appendMessage(
-        new TextMessage({
-          id: `nav-trigger-${Date.now()}`,
-          role: MessageRole.User,
-          content: `Authentication complete. Navigate to Transaction Logs, apply a ${daysBack}-day date filter, and extract all table rows. Run ID: ${runId}`,
-        })
-      );
+      const timer = setTimeout(() => {
+        appendMessage(
+          new TextMessage({
+            id: `nav-trigger-${Date.now()}`,
+            role: MessageRole.User,
+            content: `Authentication complete. Navigate to Transaction Logs, apply a ${daysBack}-day date filter, and extract all table rows. Run ID: ${runId}`,
+          })
+        );
+      }, 600);
+      return () => clearTimeout(timer);
     }
   }, [activeAgent, navigatorTrigger, appendMessage]);
 
-  // Auto-trigger reporter after agent switch
+  // Auto-trigger reporter — longer delay ensures navigator thread is fully closed
   useEffect(() => {
     if (activeAgent === "cw-reporter" && reporterTrigger) {
       const runId = reporterTrigger;
       setReporterTrigger(null);
-      appendMessage(
-        new TextMessage({
-          id: `rep-trigger-${Date.now()}`,
-          role: MessageRole.User,
-          content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${runId}`,
-        })
-      );
+      const timer = setTimeout(() => {
+        appendMessage(
+          new TextMessage({
+            id: `rep-trigger-${Date.now()}`,
+            role: MessageRole.User,
+            content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${runId}`,
+          })
+        );
+      }, 1500);
+      return () => clearTimeout(timer);
     }
   }, [activeAgent, reporterTrigger, appendMessage]);
 
@@ -96,12 +111,17 @@ export default function Home() {
       { name: "daysBack", type: "number", required: false },
     ],
     handler: async ({ runId, daysBack }) => {
-      setActiveAgent("cw-navigator");
+      // Guard: only the auth agent should switch to navigator
+      if (activeAgentRef.current !== "cw-auth") {
+        console.warn("[uiSwitchToNavigator] Blocked — called from wrong agent:", activeAgentRef.current);
+        return { switched: false, blocked: true };
+      }
+      const days = (daysBack as number) || lastRunParams?.daysBack || 7;
       setOtpMode(false);
-      setNavigatorTrigger({
-        runId: runId as string,
-        daysBack: (daysBack as number) || lastRunParams?.daysBack || 7,
-      });
+      setNavContext({ runId: runId as string, daysBack: days });
+      setNavigatorTrigger({ runId: runId as string, daysBack: days });
+      setThreadId(`nav-${Date.now()}`);
+      setActiveAgent("cw-navigator");
       return { switched: true };
     },
     render: ({ status }) => {
@@ -124,8 +144,15 @@ export default function Home() {
       { name: "runId", type: "string", required: true },
     ],
     handler: async ({ runId }) => {
-      setActiveAgent("cw-reporter");
+      // Guard: only the navigator agent should switch to reporter
+      if (activeAgentRef.current !== "cw-navigator") {
+        console.warn("[uiSwitchToReporter] Blocked — called from wrong agent:", activeAgentRef.current);
+        return { switched: false, blocked: true };
+      }
+      setRepContext(runId as string);
       setReporterTrigger(runId as string);
+      setThreadId(`rep-${Date.now()}`);
+      setActiveAgent("cw-reporter");
       return { switched: true };
     },
     render: ({ status }) => {
@@ -295,13 +322,20 @@ export default function Home() {
         <div className="h-full rounded-2xl border border-border overflow-hidden bg-card/30 backdrop-blur-sm flex flex-col">
           <div className={`flex-1 overflow-hidden ${otpMode ? "copilot-otp-mode" : ""}`}>
             <CopilotChat
+              threadId={threadId}
               labels={{
                 title: "CW Recorder Agent",
                 initial:
                   "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the CommonWell portal, extract transaction logs, and analyze errors for you.\n\nTry: *\"Get last 7 days of transaction errors\"*",
                 placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of transaction errors...",
               }}
-              instructions="You are the CW Recorder agent. When the user asks to fetch transaction data, start with cwStartRun to create a run, then cwCheckSession to check for a saved session, then cwLogin if needed. If OTP is needed, call the uiRequestOtp frontend action to show the OTP input, then wait for the user to provide the code. After authentication, call uiSwitchToNavigator to hand off. Navigate and extract data, then call uiSwitchToReporter. Finally, analyze and report errors, then call uiReportComplete. When showing screenshots, use the uiShowScreenshot action. Also call uiTrackRunParams with the daysBack value for Run Again."
+              instructions={
+                activeAgent === "cw-auth"
+                  ? "You are the CW Auth agent. When the user asks for transaction data, extract the daysBack value (default 7). Call cwStartRun(daysBack), then cwCheckSession. If session is valid skip login. If not, call cwLogin, handle OTP with uiRequestOtp. After authentication, call cwAuthComplete then immediately call uiSwitchToNavigator(runId, daysBack). Also call uiTrackRunParams(daysBack)."
+                  : activeAgent === "cw-navigator"
+                  ? `You are the CW Navigator agent. Authentication is complete. Run ID: ${navContext?.runId ?? "check trigger message"}. Date range: last ${navContext?.daysBack ?? 7} days. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navContext?.daysBack ?? 7}), then cwExtractTransactions, then cwNavigationComplete("${navContext?.runId ?? ""}"), then call uiSwitchToReporter("${navContext?.runId ?? ""}"). Do not wait for user input — start right away.`
+                  : `You are the CW Reporter agent. Data extraction is complete. Run ID: ${repContext ?? "check trigger message"}. IMMEDIATELY call cwGetRunData("${repContext ?? ""}"), analyze the records for errors (check status fields for error/fail/rejected patterns), call cwSaveReport("${repContext ?? ""}", report), then call uiReportComplete("${repContext ?? ""}", report). Present error counts and org breakdown to the user.`
+              }
               className="h-full"
             />
           </div>

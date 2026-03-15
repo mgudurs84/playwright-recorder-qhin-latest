@@ -19,6 +19,7 @@ export const cwTransactionRecordSchema = z.object({
   initiatingOrgId: z.string(),
   duration: z.string(),
   status: z.string(),
+  raw: z.record(z.string()).optional(),
 });
 
 export type CwTransactionRecord = z.infer<typeof cwTransactionRecordSchema>;

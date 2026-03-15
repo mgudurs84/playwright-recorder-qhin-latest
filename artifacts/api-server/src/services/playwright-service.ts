@@ -531,40 +531,74 @@ export class PlaywrightService {
           const ds = gridEl.kendoGrid.dataSource;
           if (!ds) return null;
           const allData = ds.data();
-          const results: Array<{
-            timestamp: string;
-            transactionId: string;
-            transactionType: string;
-            memberName: string;
-            initiatingOrgId: string;
-            duration: string;
-            status: string;
-          }> = [];
+          if (!allData || allData.length === 0) return null;
+
+          // Read the actual header column names from the DOM
+          const headerCells = document.querySelectorAll(".k-grid-header th");
+          const headers: string[] = [];
+          headerCells.forEach((th) => {
+            const text = (th.textContent || "").trim();
+            if (text) headers.push(text);
+          });
+
+          // Log first raw item so we can debug field names
+          const firstRaw = allData[0];
+          const rawKeys = Object.keys(firstRaw).filter(k => !k.startsWith("_") && !k.startsWith("$") && !k.startsWith("uid"));
+          console.log("[KendoExtract] Headers from DOM:", headers.join(", "));
+          console.log("[KendoExtract] Kendo field keys:", rawKeys.join(", "));
+          console.log("[KendoExtract] First raw item:", JSON.stringify(firstRaw));
+
           const limit = max > 0 ? Math.min(allData.length, max) : allData.length;
+          const results: Array<Record<string, string>> = [];
+
           for (let i = 0; i < limit; i++) {
             const item = allData[i];
-            results.push({
-              timestamp: item.Timestamp || item.timestamp || "",
-              transactionId: item.TransactionId || item.transactionId || "",
-              transactionType: item.TransactionType || item.transactionType || "",
-              memberName: item.MemberName || item.memberName || "",
-              initiatingOrgId: item.InitiatingOrgId || item.initiatingOrgId || "",
-              duration: item.Duration || item.duration || "",
-              status: item.Status || item.status || "",
+            // Extract all non-internal fields
+            const record: Record<string, string> = {};
+            rawKeys.forEach(k => {
+              const val = (item as Record<string, unknown>)[k];
+              if (val !== null && val !== undefined) {
+                record[k] = String(val);
+              }
             });
+            results.push(record);
           }
           return results;
         }, maxRecords);
       }, { page, reloadOnStale: true, escalateTimeout: true });
 
       if (records && records.length > 0) {
-        console.log(`[PlaywrightService] Kendo DataSource extraction: ${records.length} records`);
-        return records;
+        console.log(`[PlaywrightService] Kendo DataSource extraction: ${records.length} records, fields: ${Object.keys(records[0]).join(", ")}`);
+        // Map raw Kendo fields to CwTransactionRecord using flexible key lookup
+        return records.map(item => this.mapKendoRecord(item));
       }
     } catch (err) {
       console.log(`[PlaywrightService] Kendo DataSource not available: ${(err as Error).message}`);
     }
     return null;
+  }
+
+  private mapKendoRecord(item: Record<string, string>): CwTransactionRecord {
+    const find = (...keys: string[]) => {
+      for (const k of keys) {
+        if (item[k] !== undefined && item[k] !== null && item[k] !== "") return item[k];
+        // try case-insensitive
+        const lk = k.toLowerCase();
+        const match = Object.keys(item).find(ik => ik.toLowerCase() === lk);
+        if (match && item[match]) return item[match];
+      }
+      return "";
+    };
+    return {
+      timestamp: find("TransactionDateTime", "Timestamp", "DateTime", "Date"),
+      transactionId: find("TransactionId", "TraceId", "Id"),
+      transactionType: find("TransactionType", "Type", "MessageType"),
+      memberName: find("InitiatingOrganization", "MemberName", "Organization", "OrgName"),
+      initiatingOrgId: find("InitiatingOrgId", "OrgId", "OrganizationId"),
+      duration: find("ResponseTime", "Duration", "Time"),
+      status: find("Status", "Result", "TransactionStatus", "ResponseCode", "StatusCode"),
+      raw: item,
+    };
   }
 
   async extractViaDOMPagination(maxRecords: number): Promise<CwTransactionRecord[]> {
@@ -575,28 +609,27 @@ export class PlaywrightService {
     while (true) {
       const pageTransactions = await withRetry(async () => {
         return page.evaluate(() => {
+          // Read header column names for proper mapping
+          const headerCells = document.querySelectorAll(".k-grid-header th");
+          const headers: string[] = [];
+          headerCells.forEach((th) => {
+            const text = (th.textContent || "").trim();
+            headers.push(text);
+          });
+
           const rows = document.querySelectorAll(".k-grid-content table tbody tr");
-          const txns: Array<{
-            timestamp: string;
-            transactionId: string;
-            transactionType: string;
-            memberName: string;
-            initiatingOrgId: string;
-            duration: string;
-            status: string;
-          }> = [];
+          const txns: Array<Record<string, string>> = [];
           rows.forEach((row) => {
             const cells = row.querySelectorAll("td");
-            if (cells.length >= 7) {
-              txns.push({
-                timestamp: cells[0]?.textContent?.trim() || "",
-                transactionId: cells[1]?.textContent?.trim() || "",
-                transactionType: cells[2]?.textContent?.trim() || "",
-                memberName: cells[3]?.textContent?.trim() || "",
-                initiatingOrgId: cells[4]?.textContent?.trim() || "",
-                duration: cells[5]?.textContent?.trim() || "",
-                status: cells[6]?.textContent?.trim() || "",
+            if (cells.length >= 3) {
+              const record: Record<string, string> = {};
+              cells.forEach((cell, idx) => {
+                const key = headers[idx] || `col_${idx}`;
+                record[key] = cell.textContent?.trim() || "";
               });
+              // Also store cell index values for debugging
+              record["_cols"] = cells.length.toString();
+              txns.push(record);
             }
           });
           return txns;
@@ -604,7 +637,10 @@ export class PlaywrightService {
       }, { page, reloadOnStale: true, escalateTimeout: true });
 
       console.log(`[PlaywrightService] Page ${pageNum}: ${pageTransactions.length} transactions`);
-      allTransactions.push(...pageTransactions);
+      if (pageNum === 1 && pageTransactions.length > 0) {
+        console.log(`[PlaywrightService] DOM columns: ${Object.keys(pageTransactions[0]).join(", ")}`);
+      }
+      allTransactions.push(...pageTransactions.map(r => this.mapKendoRecord(r)));
 
       if (maxRecords > 0 && allTransactions.length >= maxRecords) {
         console.log(`[PlaywrightService] Max records (${maxRecords}) reached`);
