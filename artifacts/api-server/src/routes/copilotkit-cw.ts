@@ -135,6 +135,7 @@ const cwCheckSessionTool = defineTool({
 
     const valid = await pw.validateSession();
     if (valid) {
+      pw.setPhase("authenticated");
       await pw.addRunStep({ type: "authenticating", content: "Existing session is valid — skipping login" });
     }
     return { valid, reason: valid ? "Session is valid" : "Session expired or invalid" };

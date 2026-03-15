@@ -691,6 +691,10 @@ export class PlaywrightService {
     return this.currentPhase;
   }
 
+  setPhase(phase: RunPhase): void {
+    this.currentPhase = phase;
+  }
+
   async close(): Promise<void> {
     try {
       if (this.page && !this.page.isClosed()) await this.page.close();
