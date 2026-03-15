@@ -146,6 +146,8 @@ export class PlaywrightService {
   private currentPhase: RunPhase = "idle";
   private lastCheckpointUrl: string | null = null;
 
+  private crashDetected = false;
+
   async ensureBrowser(): Promise<Browser> {
     if (this.browser && this.browser.isConnected()) {
       return this.browser;
@@ -157,6 +159,7 @@ export class PlaywrightService {
     });
     this.browser.on("disconnected", () => {
       console.warn("[PlaywrightService] Browser disconnected unexpectedly");
+      this.crashDetected = true;
       this.browser = null;
       this.context = null;
       this.page = null;
@@ -199,8 +202,21 @@ export class PlaywrightService {
     }
   }
 
+  private async createFreshPage(): Promise<Page> {
+    const browser = await this.ensureBrowser();
+    this.context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    });
+    this.page = await this.context.newPage();
+    this.page.setDefaultTimeout(DEFAULT_TIMEOUT);
+    return this.page;
+  }
+
   async recoverFromCrash(): Promise<boolean> {
     console.log(`[PlaywrightService] Attempting crash recovery (phase: ${this.currentPhase})...`);
+    this.crashDetected = false;
     try {
       this.browser = null;
       this.context = null;
@@ -209,14 +225,15 @@ export class PlaywrightService {
       const checkpoint = await this.loadCheckpointFromDb();
       const resumeUrl = checkpoint?.url || this.lastCheckpointUrl;
 
-      const page = await this.getPage();
+      const page = await this.createFreshPage();
+
+      if (checkpoint?.phase) {
+        this.currentPhase = checkpoint.phase;
+      }
 
       if (resumeUrl) {
         console.log(`[PlaywrightService] Navigating back to checkpoint: ${resumeUrl}`);
         await page.goto(resumeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        if (checkpoint?.phase) {
-          this.currentPhase = checkpoint.phase;
-        }
       }
 
       await this.addRunStep({ type: "error", content: `Browser crash detected — recovered and resumed from ${this.currentPhase} phase` });
@@ -228,23 +245,15 @@ export class PlaywrightService {
   }
 
   async getPage(): Promise<Page> {
+    if (this.crashDetected) {
+      const recovered = await this.recoverFromCrash();
+      if (!recovered) throw new Error("Browser crashed and recovery failed");
+      return this.page!;
+    }
     if (this.page && !this.page.isClosed()) {
-      if (!this.browser || !this.browser.isConnected()) {
-        const recovered = await this.recoverFromCrash();
-        if (!recovered) throw new Error("Browser crashed and recovery failed");
-        return this.page!;
-      }
       return this.page;
     }
-    const browser = await this.ensureBrowser();
-    this.context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    });
-    this.page = await this.context.newPage();
-    this.page.setDefaultTimeout(DEFAULT_TIMEOUT);
-    return this.page;
+    return this.createFreshPage();
   }
 
   async saveSessionToDb(username: string): Promise<void> {

@@ -12,7 +12,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import yaml from "js-yaml";
 import type { Express } from "express";
-import { getPlaywrightService } from "../services/playwright-service";
+import { getPlaywrightService, takeScreenshotAsync } from "../services/playwright-service";
 
 function createVertexModel() {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
@@ -100,7 +100,7 @@ function validateExtractedRecords(records: CwTransactionRecord[]): { valid: bool
   for (let i = 0; i < Math.min(records.length, 5); i++) {
     for (const field of requiredFields) {
       if (!records[i][field]) {
-        issues.push(`Record ${i}: missing required field '${field}'`);
+        issues.push(`Record ${i}: missing required field '${String(field)}'`);
       }
     }
   }
@@ -155,16 +155,21 @@ const cwLoginTool = defineTool({
     const pw = getPlaywrightService();
     try {
       const result = await pw.login(username, password);
+      if (!result.needsOtp) {
+        await pw.saveSessionToDb(username);
+      }
       await pw.addRunStep({
         type: "authenticating",
-        content: result.needsOtp ? "Login submitted — OTP required. Please provide the verification code." : "Login successful",
+        content: result.needsOtp ? "Login submitted — OTP required. Please provide the verification code." : "Login successful — session saved",
         screenshotUrl: result.screenshotUrl,
       });
       return { success: true, ...result };
     } catch (err) {
       const message = (err as Error).message;
-      await pw.addRunStep({ type: "error", content: `Login failed: ${message}` });
-      return { success: false, needsOtp: false, error: message };
+      let screenshotUrl: string | undefined;
+      try { const page = await pw.getPage(); screenshotUrl = await takeScreenshotAsync(page, "login-error"); } catch {}
+      await pw.addRunStep({ type: "error", content: `Login failed: ${message}`, screenshotUrl });
+      return { success: false, needsOtp: false, error: message, screenshotUrl };
     }
   },
 });
@@ -196,7 +201,9 @@ const cwSubmitOtpTool = defineTool({
       }
       return result;
     } catch (err) {
-      return { success: false, error: (err as Error).message };
+      let screenshotUrl: string | undefined;
+      try { const page = await pw.getPage(); screenshotUrl = await takeScreenshotAsync(page, "otp-error"); } catch {}
+      return { success: false, error: (err as Error).message, screenshotUrl };
     }
   },
 });
@@ -231,8 +238,10 @@ const cwNavigateToTransactionsTool = defineTool({
       return { success: true, screenshotUrl };
     } catch (err) {
       const message = (err as Error).message;
-      await pw.addRunStep({ type: "error", content: `Navigation failed: ${message}` });
-      return { success: false, error: message };
+      let errScreenshot: string | undefined;
+      try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "nav-error"); } catch {}
+      await pw.addRunStep({ type: "error", content: `Navigation failed: ${message}`, screenshotUrl: errScreenshot });
+      return { success: false, error: message, screenshotUrl: errScreenshot };
     }
   },
 });
@@ -257,7 +266,9 @@ const cwApplyDateFilterTool = defineTool({
       });
       return { success: true, dataLoaded, screenshotUrl };
     } catch (err) {
-      return { success: false, error: (err as Error).message };
+      let errScreenshot: string | undefined;
+      try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "date-filter-error"); } catch {}
+      return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
 });
@@ -309,7 +320,9 @@ const cwExtractTransactionsTool = defineTool({
         screenshotUrl,
       };
     } catch (err) {
-      return { success: false, error: (err as Error).message };
+      let errScreenshot: string | undefined;
+      try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "extraction-error"); } catch {}
+      return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
 });
@@ -537,10 +550,13 @@ export function registerCwRunsRoute(app: Express) {
     }
   });
 
-  app.get("/api/cw/runs/:id", async (req, res) => {
+  app.get("/api/cw/runs/:id", async (req, res): Promise<void> => {
     try {
       const run = await db.select().from(cwRuns).where(eq(cwRuns.id, req.params.id)).limit(1);
-      if (!run[0]) return res.status(404).json({ error: "Run not found" });
+      if (!run[0]) {
+        res.status(404).json({ error: "Run not found" });
+        return;
+      }
       res.json(run[0]);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
