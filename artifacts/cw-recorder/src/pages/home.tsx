@@ -14,38 +14,21 @@ export default function Home() {
   const [otpValue, setOtpValue] = useState("");
   const [otpSubmitting, setOtpSubmitting] = useState(false);
   const [runComplete, setRunComplete] = useState(false);
-  const [lastRunParams, setLastRunParams] = useState<{ daysBack: number } | null>(null);
+  const [navDaysBack, setNavDaysBack] = useState(7);
 
-  // Per-agent context passed down via chatInstructions
-  const [navContext, setNavContext] = useState<{ runId: string; daysBack: number } | null>(null);
-  const [repContext, setRepContext] = useState<string | null>(null);
-
-  // Session tracking: set when user sends their first message, so we only
-  // look at runs created AFTER that moment (avoids stale runs from old sessions)
-  const sessionStartRef = useRef<number | null>(null);
   const [pollingActive, setPollingActive] = useState(false);
 
-  // Guards to prevent double-triggering agent switches
   const navSwitchDoneRef = useRef(false);
   const repSwitchDoneRef = useRef(false);
-
-  // Ref to always access current activeAgent in polling without stale closures
   const activeAgentRef = useRef(activeAgent);
   useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
 
   const { appendMessage, reset } = useCopilotChat({
     onSubmitMessage: () => {
-      // Activate polling the first time the user sends a message
-      if (!sessionStartRef.current) {
-        sessionStartRef.current = Date.now();
-      }
       setPollingActive(true);
     },
   });
 
-  // Clear stale CopilotKit thread state synchronously on mount.
-  // Using useLayoutEffect ensures this fires before any CopilotKit
-  // reconnection requests, preventing MissingToolResultsError replays.
   useLayoutEffect(() => {
     reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -58,48 +41,36 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── Status Polling ────────────────────────────────────────────────────────
-  // Instead of using frontend actions for agent switching (which causes
-  // MissingToolResultsError by leaving dangling tool calls on the LLM thread),
-  // we poll the DB run status every 3 seconds and switch agents when status changes.
-  // Polling only starts once the user sends their first message (pollingActive=true),
-  // and only considers runs created AFTER that moment (sessionStartRef) to avoid
-  // picking up stale runs from previous sessions.
+  // ─── Status Polling ─────────────────────────────────────────────────────────
+  // Poll /api/cw/status (in-memory, no DB) every 3 seconds.
+  // Drives agent transitions based on phase changes:
+  //   idle → authenticated  →  switch to Navigator
+  //   authenticated → extracted  →  switch to Reporter
+  //   extracted → complete  →  mark run done
   useEffect(() => {
     if (!pollingActive || runComplete) return;
 
     const poll = async () => {
       try {
-        const res = await fetch(apiUrl("/api/cw/runs"));
+        const res = await fetch(apiUrl("/api/cw/status"));
         if (!res.ok) return;
-        const { runs } = await res.json() as { runs: Array<{
-          id: string;
-          status: string;
-          startedAt: string;
-          parameters?: { daysBack?: number };
-        }> };
-
-        // Only consider runs started after the session began (with a 60s buffer
-        // to account for cwStartRun call lag after the user sends their message)
-        const sessionStart = sessionStartRef.current ?? Date.now();
-        const sessionRuns = runs.filter(r => {
-          const t = new Date(r.startedAt).getTime();
-          return t >= sessionStart - 60_000;
-        });
-        const latest = sessionRuns[0];
-        if (!latest) return;
+        const status = await res.json() as {
+          phase: string;
+          daysBack: number;
+          recordCount: number;
+          errorCount: number;
+        };
 
         const agent = activeAgentRef.current;
 
         if (
-          latest.status === "authenticated" &&
+          status.phase === "authenticated" &&
           agent === "cw-auth" &&
           !navSwitchDoneRef.current
         ) {
           navSwitchDoneRef.current = true;
-          const days = latest.parameters?.daysBack ?? lastRunParams?.daysBack ?? 7;
-          setLastRunParams({ daysBack: days });
-          setNavContext({ runId: latest.id, daysBack: days });
+          const days = status.daysBack ?? 7;
+          setNavDaysBack(days);
           setActiveAgent("cw-navigator");
           setTimeout(() => {
             reset();
@@ -107,17 +78,16 @@ export default function Home() {
               new TextMessage({
                 id: `nav-trigger-${Date.now()}`,
                 role: MessageRole.User,
-                content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, and extract all table rows. Run ID: ${latest.id}`,
+                content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, extract all table rows, then call cwNavigationComplete.`,
               })
             );
           }, 500);
         } else if (
-          latest.status === "extracted" &&
+          status.phase === "extracted" &&
           agent === "cw-navigator" &&
           !repSwitchDoneRef.current
         ) {
           repSwitchDoneRef.current = true;
-          setRepContext(latest.id);
           setActiveAgent("cw-reporter");
           setTimeout(() => {
             reset();
@@ -125,11 +95,11 @@ export default function Home() {
               new TextMessage({
                 id: `rep-trigger-${Date.now()}`,
                 role: MessageRole.User,
-                content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${latest.id}`,
+                content: `Extraction complete (${status.recordCount} records, ${status.errorCount} errors). Call cwGetRunData, analyze the transactions, and generate the full error analysis report. Then call cwSaveReport with the report.`,
               })
             );
           }, 500);
-        } else if (latest.status === "complete" && agent === "cw-reporter") {
+        } else if (status.phase === "complete" && agent === "cw-reporter") {
           setRunComplete(true);
           setPollingActive(false);
         }
@@ -140,7 +110,7 @@ export default function Home() {
 
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
-  }, [pollingActive, runComplete, appendMessage, reset, setActiveAgent, lastRunParams]);
+  }, [pollingActive, runComplete, appendMessage, reset, setActiveAgent]);
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
@@ -161,38 +131,33 @@ export default function Home() {
   }, [otpValue, appendMessage]);
 
   const handleRunAgain = useCallback(async () => {
-    // Reset session tracking for a fresh run
-    sessionStartRef.current = Date.now();
+    try {
+      await fetch(apiUrl("/api/cw/reset"), { method: "POST" });
+    } catch {}
+
     navSwitchDoneRef.current = false;
     repSwitchDoneRef.current = false;
 
     setActiveAgent("cw-auth");
     setRunComplete(false);
     setOtpMode(false);
-    setNavContext(null);
-    setRepContext(null);
     setPollingActive(true);
-    const days = lastRunParams?.daysBack ?? 7;
+
     reset();
     await appendMessage(
       new TextMessage({
         id: `rerun-${Date.now()}`,
         role: MessageRole.User,
-        content: `Run again — get the last ${days} days of transaction errors`,
+        content: `Run again — get the last ${navDaysBack} days of transaction errors`,
       })
     );
-  }, [lastRunParams, setActiveAgent, appendMessage, reset]);
+  }, [navDaysBack, setActiveAgent, appendMessage, reset]);
 
-  // ─── Frontend Actions ──────────────────────────────────────────────────────
-  // NOTE: uiSwitchToNavigator and uiSwitchToReporter have been REMOVED.
-  // Agent switching is now handled purely by DB status polling (above).
-  // This eliminates the MissingToolResultsError caused by dangling LLM tool calls.
-
+  // ─── Frontend Actions ───────────────────────────────────────────────────────
   useCopilotAction({
     name: "uiReportComplete",
     description: "Called when the report is saved and the run is complete",
     parameters: [
-      { name: "runId", type: "string", required: true },
       { name: "report", type: "string", required: true },
     ],
     handler: async () => {
@@ -271,25 +236,13 @@ export default function Home() {
     },
   });
 
-  useCopilotAction({
-    name: "uiTrackRunParams",
-    description: "Track run parameters for Run Again functionality",
-    parameters: [
-      { name: "daysBack", type: "number", required: true },
-    ],
-    handler: async ({ daysBack }) => {
-      setLastRunParams({ daysBack: daysBack as number });
-      return { tracked: true };
-    },
-  });
-
-  // ─── Per-agent instructions ───────────────────────────────────────────────
+  // ─── Per-agent instructions ─────────────────────────────────────────────────
   const chatInstructions =
     activeAgent === "cw-auth"
-      ? "You are the CW Auth agent. When the user asks for transaction data, extract the daysBack value (default 7). Call uiTrackRunParams(daysBack) first to record the params. Then call cwStartRun(daysBack), then cwCheckSession. If session is valid skip login. If not, call cwLogin, handle OTP with uiRequestOtp. After authentication, call cwAuthComplete. The system will automatically switch to the Navigator. Do NOT call any switch actions."
+      ? "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession first — if the session is valid, skip login and call cwAuthComplete(daysBack) immediately. If not, call cwLogin. If OTP is required, call uiRequestOtp then wait for the user to provide the code. When they do, call cwSubmitOtp(otp). After successful authentication call cwAuthComplete(daysBack). Then STOP — the system will automatically switch to the Navigator."
       : activeAgent === "cw-navigator"
-      ? `You are the CW Navigator agent. Authentication is complete. Run ID: ${navContext?.runId ?? "see trigger message"}. Date range: last ${navContext?.daysBack ?? 7} days. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navContext?.daysBack ?? 7}), then cwExtractTransactions, then cwNavigationComplete("${navContext?.runId ?? ""}"). The system will automatically switch to the Reporter. Do NOT call any switch actions.`
-      : `You are the CW Reporter agent. Extraction is complete. Run ID: ${repContext ?? "see trigger message"}. IMMEDIATELY call cwGetRunData("${repContext ?? ""}"), analyze the records for errors (check all status/result/code fields for error patterns), call cwSaveReport("${repContext ?? ""}", report), then call uiReportComplete("${repContext ?? ""}", report). Present the full error analysis to the user.`;
+      ? `You are the CW Navigator agent. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navDaysBack}), then cwExtractTransactions, then cwNavigationComplete. The system will automatically switch to the Reporter. Do NOT call any switch actions.`
+      : "You are the CW Reporter agent. IMMEDIATELY call cwGetRunData to retrieve the extracted transactions. Analyze the data for errors across all status/result/code fields. Call cwSaveReport(report) with your full markdown analysis. Then call uiReportComplete(report). Present the complete error analysis to the user.";
 
   return (
     <div className="flex flex-col h-full">
@@ -409,7 +362,7 @@ export default function Home() {
                   className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  Run Again{lastRunParams ? ` (${lastRunParams.daysBack} days)` : ""}
+                  Run Again ({navDaysBack} days)
                 </button>
               </motion.div>
             )}

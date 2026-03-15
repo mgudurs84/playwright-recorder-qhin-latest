@@ -1,8 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { db, cwSessions, cwRuns } from "@workspace/db";
-import type { CwTransactionRecord, CwRunStep } from "@workspace/db";
+import { db, cwSessions } from "@workspace/db";
+import type { CwTransactionRecord } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { randomUUID } from "crypto";
 import { mkdirSync, existsSync } from "fs";
 import path from "path";
 
@@ -142,7 +141,6 @@ export class PlaywrightService {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
-  private runId: string | null = null;
   private currentPhase: RunPhase = "idle";
   private lastCheckpointUrl: string | null = null;
 
@@ -167,39 +165,15 @@ export class PlaywrightService {
     return this.browser;
   }
 
-  private async persistCheckpoint(url: string): Promise<void> {
+  private lastCheckpoint: Checkpoint | null = null;
+
+  private persistCheckpoint(url: string): void {
     this.lastCheckpointUrl = url;
-    if (!this.runId) return;
-    const checkpoint: Checkpoint = {
+    this.lastCheckpoint = {
       phase: this.currentPhase,
       url,
       timestamp: new Date().toISOString(),
     };
-    try {
-      const rows = await db.select({ parameters: cwRuns.parameters }).from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
-      if (rows[0]) {
-        const existing = rows[0].parameters as Record<string, unknown> || {};
-        await db
-          .update(cwRuns)
-          .set({ parameters: { ...existing, _checkpoint: checkpoint } })
-          .where(eq(cwRuns.id, this.runId));
-      }
-    } catch (err) {
-      console.warn("[PlaywrightService] Failed to persist checkpoint:", (err as Error).message);
-    }
-  }
-
-  private async loadCheckpointFromDb(): Promise<Checkpoint | null> {
-    if (!this.runId) return null;
-    try {
-      const rows = await db.select({ parameters: cwRuns.parameters }).from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
-      if (!rows[0]) return null;
-      const params = rows[0].parameters as Record<string, unknown>;
-      const checkpoint = params?._checkpoint as Checkpoint | undefined;
-      return checkpoint || null;
-    } catch {
-      return null;
-    }
   }
 
   private async createFreshPage(): Promise<Page> {
@@ -222,8 +196,7 @@ export class PlaywrightService {
       this.context = null;
       this.page = null;
 
-      const checkpoint = await this.loadCheckpointFromDb();
-      const resumeUrl = checkpoint?.url || this.lastCheckpointUrl;
+      const resumeUrl = this.lastCheckpoint?.url || this.lastCheckpointUrl;
 
       const username = process.env.CW_USERNAME;
       let sessionRestored = false;
@@ -238,8 +211,8 @@ export class PlaywrightService {
         await this.createFreshPage();
       }
 
-      if (checkpoint?.phase) {
-        this.currentPhase = checkpoint.phase;
+      if (this.lastCheckpoint?.phase) {
+        this.currentPhase = this.lastCheckpoint.phase;
       }
 
       if (resumeUrl) {
@@ -254,7 +227,7 @@ export class PlaywrightService {
         }
       }
 
-      await this.addRunStep({ type: "error", content: `Browser crash detected — recovered${sessionRestored ? " with session" : ""} and resumed from ${this.currentPhase} phase` });
+      console.log(`[PlaywrightService] Crash recovered${sessionRestored ? " with session" : ""}, phase: ${this.currentPhase}`);
       return true;
     } catch (err) {
       console.error("[PlaywrightService] Crash recovery failed:", (err as Error).message);
@@ -676,64 +649,6 @@ export class PlaywrightService {
     this.currentPhase = "extracted";
 
     return { records, screenshotUrl };
-  }
-
-  async createRun(parameters: Record<string, unknown>): Promise<string> {
-    const runId = randomUUID();
-    await db.insert(cwRuns).values({
-      id: runId,
-      status: "running",
-      parameters,
-      records: [],
-      steps: [],
-      screenshotUrls: [],
-    });
-    this.runId = runId;
-    this.currentPhase = "idle";
-    this.lastCheckpointUrl = null;
-    return runId;
-  }
-
-  async updateRun(updates: Partial<{
-    status: string;
-    recordCount: number;
-    errorCount: number;
-    records: CwTransactionRecord[];
-    steps: CwRunStep[];
-    screenshotUrls: string[];
-    report: string;
-    completedAt: Date;
-  }>): Promise<void> {
-    if (!this.runId) return;
-    if (updates.status) {
-      this.currentPhase = updates.status as RunPhase;
-    }
-    await db.update(cwRuns).set(updates).where(eq(cwRuns.id, this.runId));
-  }
-
-  async addRunStep(step: { type: string; content: string; screenshotUrl?: string }): Promise<void> {
-    if (!this.runId) return;
-    const run = await db.select().from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
-    if (!run[0]) return;
-    const currentSteps = (run[0].steps as CwRunStep[]) || [];
-    const currentScreenshots = (run[0].screenshotUrls as string[]) || [];
-    const newStep: CwRunStep = {
-      type: step.type as CwRunStep["type"],
-      content: step.content,
-      screenshotUrl: step.screenshotUrl,
-      timestamp: new Date().toISOString(),
-    };
-    const newScreenshots = step.screenshotUrl
-      ? [...currentScreenshots, step.screenshotUrl]
-      : currentScreenshots;
-    await db
-      .update(cwRuns)
-      .set({ steps: [...currentSteps, newStep], screenshotUrls: newScreenshots })
-      .where(eq(cwRuns.id, this.runId));
-  }
-
-  getRunId(): string | null {
-    return this.runId;
   }
 
   getCurrentPhase(): RunPhase {

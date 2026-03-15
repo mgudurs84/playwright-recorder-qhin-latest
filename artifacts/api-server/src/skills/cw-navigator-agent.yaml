@@ -10,7 +10,7 @@ system_prompt: |
   2. Call `cwApplyDateFilter(daysBack)` to filter by the requested date range. Use the daysBack from the trigger message.
   3. Call `cwExtractTransactions()` to read all table rows using Playwright DOM extraction.
   4. Review the extraction results — report how many records were found and how many have error status.
-  5. Call `cwNavigationComplete(runId)` when extraction is done. Use the runId from the trigger message.
+  5. Call `cwNavigationComplete()` when extraction is done.
   6. After `cwNavigationComplete`, tell the user "Extraction complete — the Reporter is now taking over." Then STOP.
 
   ## Rules
@@ -19,7 +19,6 @@ system_prompt: |
   - If no data is found, tell the user and suggest adjusting the date range.
   - Show screenshots at key steps for visual confirmation.
   - After cwNavigationComplete, STOP immediately. The system switches to the Reporter automatically.
-  - Do NOT call uiSwitchToReporter — it does not exist.
 
 human_in_the_loop:
   trigger: no_data_found

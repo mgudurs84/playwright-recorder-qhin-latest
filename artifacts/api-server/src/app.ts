@@ -4,7 +4,7 @@ import path from "path";
 import router from "./routes";
 import { registerCopilotKitRoute, registerCopilotKitInfoRoute, initializeRuntime } from "./routes/copilotkit";
 import { registerAgentsRoute } from "./routes/agents";
-import { registerCwCopilotKitRoute, registerCwRunsRoute } from "./routes/copilotkit-cw";
+import { registerCwCopilotKitRoute, registerCwStatusRoute } from "./routes/copilotkit-cw";
 
 const app: Express = express();
 
@@ -27,7 +27,7 @@ registerCopilotKitRoute(app);
 registerAgentsRoute(app);
 
 registerCwCopilotKitRoute(app);
-registerCwRunsRoute(app);
+registerCwStatusRoute(app);
 
 app.use("/api", router);
 

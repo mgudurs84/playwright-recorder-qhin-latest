@@ -5,7 +5,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { CopilotKit } from "@copilotkit/react-core";
 import { Layout } from "@/components/layout";
 import Home from "@/pages/home";
-import RunDetail from "@/pages/run-detail";
 import NotFound from "@/pages/not-found";
 import "@copilotkit/react-ui/styles.css";
 import { CwAgentProvider, useActiveCwAgent } from "@/contexts/agent-context";
@@ -20,7 +19,6 @@ function Router() {
     <Layout>
       <Switch>
         <Route path="/" component={Home} />
-        <Route path="/run/:id" component={RunDetail} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

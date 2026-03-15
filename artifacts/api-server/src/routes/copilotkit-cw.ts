@@ -5,9 +5,7 @@ import {
 import { BuiltInAgent, defineTool } from "@copilotkit/runtime/v2";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { z } from "zod";
-import { db, cwRuns } from "@workspace/db";
 import type { CwTransactionRecord } from "@workspace/db";
-import { eq, desc } from "drizzle-orm";
 import { readFileSync } from "fs";
 import { join } from "path";
 import yaml from "js-yaml";
@@ -52,22 +50,16 @@ interface GroupedAnalysis {
 const ERROR_PATTERNS = ["error", "fail", "failed", "reject", "rejected", "timeout", "exception", "unavailable", "denied", "unauthorized", "forbidden", "404", "500", "503"];
 
 function isErrorRecord(record: CwTransactionRecord): boolean {
-  // Check the mapped status field
   const status = record.status?.toLowerCase() || "";
   if (ERROR_PATTERNS.some(p => status.includes(p))) return true;
-
-  // Check all raw fields for error indicators
   if (record.raw) {
     for (const [key, val] of Object.entries(record.raw)) {
       const lkey = key.toLowerCase();
       const lval = String(val).toLowerCase();
-      // Skip response-time-like values (e.g., "7185.02ms")
       if (/^\d+(\.\d+)?ms$/.test(val)) continue;
-      // Look for error patterns in field names or values that look like status fields
       if (lkey.includes("status") || lkey.includes("result") || lkey.includes("code")) {
         if (ERROR_PATTERNS.some(p => lval.includes(p))) return true;
       }
-      // Also check if any field value is literally an error keyword
       if (ERROR_PATTERNS.some(p => lval === p)) return true;
     }
   }
@@ -82,7 +74,6 @@ function groupTransactionsByStatus(records: CwTransactionRecord[]): GroupedAnaly
   let errorCount = 0;
 
   for (const record of records) {
-    // Use the best available status label
     const rawStatusVal = record.raw
       ? Object.entries(record.raw).find(([k]) => /status|result|code/i.test(k))?.[1]
       : undefined;
@@ -113,45 +104,49 @@ function groupTransactionsByStatus(records: CwTransactionRecord[]): GroupedAnaly
     }
   }
 
-  return {
-    totalRecords: records.length,
-    errorCount,
-    statusBreakdown,
-    errorsByType,
-    errorsByOrg,
-    errorsByHour,
-  };
+  return { totalRecords: records.length, errorCount, statusBreakdown, errorsByType, errorsByOrg, errorsByHour };
 }
 
 function validateExtractedRecords(records: CwTransactionRecord[]): { valid: boolean; issues: string[] } {
   const issues: string[] = [];
-  if (records.length === 0) {
-    issues.push("No records were extracted from the table");
-  }
+  if (records.length === 0) issues.push("No records were extracted from the table");
   const requiredFields: Array<keyof CwTransactionRecord> = ["transactionId", "status"];
   for (let i = 0; i < Math.min(records.length, 5); i++) {
     for (const field of requiredFields) {
-      if (!records[i][field]) {
-        issues.push(`Record ${i}: missing required field '${String(field)}'`);
-      }
+      if (!records[i][field]) issues.push(`Record ${i}: missing required field '${String(field)}'`);
     }
   }
   return { valid: issues.length === 0, issues };
 }
 
-const cwStartRunTool = defineTool({
-  name: "cwStartRun",
-  description: "Create a new CommonWell automation run. Returns a runId to use in all subsequent calls.",
-  parameters: z.object({
-    daysBack: z.number().default(7).describe("How many days back to search for transactions"),
-  }),
-  execute: async ({ daysBack }) => {
-    const pw = getPlaywrightService();
-    const runId = await pw.createRun({ daysBack, startedAt: new Date().toISOString() });
-    await pw.addRunStep({ type: "authenticating", content: "Starting automation run" });
-    return { runId, daysBack };
-  },
-});
+interface CwSessionState {
+  phase: string;
+  daysBack: number;
+  records: CwTransactionRecord[];
+  recordCount: number;
+  errorCount: number;
+  report: string | null;
+}
+
+let cwSession: CwSessionState = {
+  phase: "idle",
+  daysBack: 7,
+  records: [],
+  recordCount: 0,
+  errorCount: 0,
+  report: null,
+};
+
+function resetCwSession(daysBack = 7): void {
+  cwSession = {
+    phase: "idle",
+    daysBack,
+    records: [],
+    recordCount: 0,
+    errorCount: 0,
+    report: null,
+  };
+}
 
 const cwCheckSessionTool = defineTool({
   name: "cwCheckSession",
@@ -160,17 +155,12 @@ const cwCheckSessionTool = defineTool({
   execute: async () => {
     const username = process.env.CW_USERNAME;
     if (!username) return { valid: false, reason: "CW_USERNAME not configured" };
-
     const pw = getPlaywrightService();
     const loaded = await pw.loadSessionFromDb(username);
     if (!loaded) return { valid: false, reason: "No saved session or session expired" };
-
     const valid = await pw.validateSession();
-    if (valid) {
-      pw.setPhase("authenticated");
-      await pw.addRunStep({ type: "authenticating", content: "Existing session is valid — skipping login" });
-    }
-    return { valid, reason: valid ? "Session is valid" : "Session expired or invalid" };
+    if (valid) pw.setPhase("authenticated");
+    return { valid, reason: valid ? "Session is valid — skipping login" : "Session expired or invalid" };
   },
 });
 
@@ -184,25 +174,17 @@ const cwLoginTool = defineTool({
     if (!username || !password) {
       return { success: false, needsOtp: false, error: "CW_USERNAME and CW_PASSWORD must be set" };
     }
-
     const pw = getPlaywrightService();
     try {
       const result = await pw.login(username, password);
       if (!result.needsOtp) {
         await pw.saveSessionToDb(username);
       }
-      await pw.addRunStep({
-        type: "authenticating",
-        content: result.needsOtp ? "Login submitted — OTP required. Please provide the verification code." : "Login successful — session saved",
-        screenshotUrl: result.screenshotUrl,
-      });
       return { success: true, ...result };
     } catch (err) {
       const message = (err as Error).message;
       let screenshotUrl: string | undefined;
       try { const page = await pw.getPage(); screenshotUrl = await takeScreenshotAsync(page, "login-error"); } catch {}
-      try { await pw.updateRun({ status: "error" }); } catch {}
-      await pw.addRunStep({ type: "error", content: `Login failed: ${message}`, screenshotUrl });
       return { success: false, needsOtp: false, error: message, screenshotUrl };
     }
   },
@@ -225,17 +207,6 @@ const cwSubmitOtpTool = defineTool({
       if (result.success) {
         const username = process.env.CW_USERNAME!;
         await pw.saveSessionToDb(username);
-        await pw.addRunStep({
-          type: "authenticating",
-          content: "OTP verified — session saved",
-          screenshotUrl: result.screenshotUrl,
-        });
-      } else {
-        await pw.addRunStep({
-          type: "error",
-          content: "OTP verification failed — please try again",
-          screenshotUrl: result.screenshotUrl,
-        });
       }
       return result;
     } catch (err) {
@@ -248,20 +219,21 @@ const cwSubmitOtpTool = defineTool({
 
 const cwAuthCompleteTool = defineTool({
   name: "cwAuthComplete",
-  description: "Signal that authentication is complete and the Navigator should take over.",
+  description: "Signal that authentication is complete. The Navigator will take over automatically.",
   parameters: z.object({
-    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
+    daysBack: z.number().default(7).describe("How many days back to search for transactions"),
   }),
-  execute: async ({ runId: providedRunId }) => {
+  execute: async ({ daysBack }) => {
     const pw = getPlaywrightService();
-    const runId = providedRunId || pw.getRunId();
     const phase = pw.getCurrentPhase();
     if (phase !== "authenticating" && phase !== "authenticated") {
-      return { success: false, error: `Cannot complete auth in '${phase}' phase — OTP must be verified first if required` };
+      return { success: false, error: `Cannot complete auth in '${phase}' phase` };
     }
-    await pw.updateRun({ status: "authenticated" });
-    await pw.addRunStep({ type: "authenticating", content: "Authentication complete" });
-    return { success: true, runId, nextAgent: "cw-navigator", currentPhase: "authenticated" };
+    pw.setPhase("authenticated");
+    cwSession.phase = "authenticated";
+    cwSession.daysBack = daysBack;
+    console.log(`[CW] Auth complete. daysBack=${daysBack}`);
+    return { success: true, nextAgent: "cw-navigator", currentPhase: "authenticated" };
   },
 });
 
@@ -277,18 +249,11 @@ const cwNavigateToTransactionsTool = defineTool({
     }
     try {
       const screenshotUrl = await pw.navigateToTransactionLogs();
-      await pw.addRunStep({
-        type: "navigating",
-        content: "Navigated to Transaction Logs",
-        screenshotUrl,
-      });
       return { success: true, screenshotUrl };
     } catch (err) {
       const message = (err as Error).message;
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "nav-error"); } catch {}
-      try { await pw.updateRun({ status: "error" }); } catch {}
-      await pw.addRunStep({ type: "error", content: `Navigation failed: ${message}`, screenshotUrl: errScreenshot });
       return { success: false, error: message, screenshotUrl: errScreenshot };
     }
   },
@@ -309,18 +274,10 @@ const cwApplyDateFilterTool = defineTool({
     try {
       const screenshotUrl = await pw.applyDateFilter(daysBack);
       const dataLoaded = await pw.waitForDataLoaded();
-      await pw.addRunStep({
-        type: "navigating",
-        content: dataLoaded
-          ? `Date filter applied (${daysBack} days) — data loaded`
-          : `Date filter applied (${daysBack} days) — no data found`,
-        screenshotUrl,
-      });
       return { success: true, dataLoaded, screenshotUrl };
     } catch (err) {
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "date-filter-error"); } catch {}
-      try { await pw.updateRun({ status: "error" }); } catch {}
       return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
@@ -343,31 +300,13 @@ const cwExtractTransactionsTool = defineTool({
       const validation = validateExtractedRecords(records);
       const grouped = groupTransactionsByStatus(records);
 
-      await pw.updateRun({
-        records,
-        recordCount: records.length,
-        errorCount: grouped.errorCount,
-      });
+      cwSession.records = records;
+      cwSession.recordCount = records.length;
+      cwSession.errorCount = grouped.errorCount;
 
       if (!validation.valid) {
-        await pw.addRunStep({
-          type: "extracting",
-          content: `Extraction completed with issues: ${validation.issues.join("; ")}`,
-          screenshotUrl,
-        });
-        return {
-          success: false,
-          totalRecords: records.length,
-          validationIssues: validation.issues,
-          screenshotUrl,
-        };
+        return { success: false, totalRecords: records.length, validationIssues: validation.issues, screenshotUrl };
       }
-
-      await pw.addRunStep({
-        type: "extracting",
-        content: `Extracted ${records.length} transactions (${grouped.errorCount} errors)`,
-        screenshotUrl,
-      });
 
       return {
         success: true,
@@ -379,7 +318,6 @@ const cwExtractTransactionsTool = defineTool({
     } catch (err) {
       let errScreenshot: string | undefined;
       try { const page = await pw.getPage(); errScreenshot = await takeScreenshotAsync(page, "extraction-error"); } catch {}
-      try { await pw.updateRun({ status: "error" }); } catch {}
       return { success: false, error: (err as Error).message, screenshotUrl: errScreenshot };
     }
   },
@@ -387,41 +325,32 @@ const cwExtractTransactionsTool = defineTool({
 
 const cwNavigationCompleteTool = defineTool({
   name: "cwNavigationComplete",
-  description: "Signal that navigation and extraction are complete. The Reporter should take over.",
-  parameters: z.object({
-    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
-  }),
-  execute: async ({ runId: providedRunId }) => {
+  description: "Signal that navigation and extraction are complete. The Reporter will take over automatically.",
+  parameters: z.object({}),
+  execute: async () => {
     const pw = getPlaywrightService();
-    const runId = providedRunId || pw.getRunId();
     const phase = pw.getCurrentPhase();
     if (phase !== "navigating" && phase !== "extracted") {
       return { success: false, error: `Cannot complete navigation in '${phase}' phase` };
     }
-    await pw.updateRun({ status: "extracted" });
-    await pw.addRunStep({ type: "extracting", content: "Extraction complete" });
-    return { success: true, runId, nextAgent: "cw-reporter", currentPhase: "extracted" };
+    pw.setPhase("extracted");
+    cwSession.phase = "extracted";
+    console.log(`[CW] Navigation complete. ${cwSession.recordCount} records, ${cwSession.errorCount} errors.`);
+    return { success: true, nextAgent: "cw-reporter", currentPhase: "extracted" };
   },
 });
 
 const cwGetRunDataTool = defineTool({
   name: "cwGetRunData",
   description: "Retrieve the extracted transaction records for analysis, with pre-computed groupings by status, error type, and organization.",
-  parameters: z.object({
-    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
-  }),
-  execute: async ({ runId: providedRunId }) => {
-    const pw = getPlaywrightService();
-    const runId = providedRunId || pw.getRunId();
-    if (!runId) return { error: "No active run ID" };
-    const run = await db.select().from(cwRuns).where(eq(cwRuns.id, runId)).limit(1);
-    if (!run[0]) return { error: "Run not found" };
-
-    const records = (run[0].records as CwTransactionRecord[]) || [];
+  parameters: z.object({}),
+  execute: async () => {
+    const records = cwSession.records;
+    if (records.length === 0) {
+      return { error: "No records available. Navigation may not be complete yet." };
+    }
     const grouped = groupTransactionsByStatus(records);
-
     return {
-      runId,
       totalRecords: grouped.totalRecords,
       errorCount: grouped.errorCount,
       statusBreakdown: grouped.statusBreakdown,
@@ -434,56 +363,24 @@ const cwGetRunDataTool = defineTool({
       errorsByOrg: grouped.errorsByOrg,
       errorsByHour: grouped.errorsByHour,
       records,
-      parameters: run[0].parameters,
-      steps: run[0].steps,
     };
   },
 });
 
 const cwSaveReportTool = defineTool({
   name: "cwSaveReport",
-  description: "Save the analysis report to the run and mark it complete.",
+  description: "Save the analysis report and mark the run complete.",
   parameters: z.object({
-    runId: z.string().optional().describe("The automation run ID (auto-detected if omitted)"),
     report: z.string().describe("The markdown analysis report"),
   }),
-  execute: async ({ runId: providedRunId, report }) => {
+  execute: async ({ report }) => {
+    cwSession.report = report;
+    cwSession.phase = "complete";
     const pw = getPlaywrightService();
-    const runId = providedRunId || pw.getRunId();
-    if (!runId) return { error: "No active run ID" };
-    await db
-      .update(cwRuns)
-      .set({ report, status: "complete", completedAt: new Date() })
-      .where(eq(cwRuns.id, runId));
-
-    await pw.addRunStep({ type: "complete", content: "Report saved" });
+    pw.setPhase("complete");
     await pw.close();
-
-    return { success: true, runId };
-  },
-});
-
-const cwListRunsTool = defineTool({
-  name: "cwListRuns",
-  description: "List recent automation runs.",
-  parameters: z.object({
-    limit: z.number().default(10).describe("Max runs to return"),
-  }),
-  execute: async ({ limit }) => {
-    const runs = await db
-      .select({
-        id: cwRuns.id,
-        status: cwRuns.status,
-        recordCount: cwRuns.recordCount,
-        errorCount: cwRuns.errorCount,
-        startedAt: cwRuns.startedAt,
-        completedAt: cwRuns.completedAt,
-        parameters: cwRuns.parameters,
-      })
-      .from(cwRuns)
-      .orderBy(desc(cwRuns.startedAt))
-      .limit(limit);
-    return { runs };
+    console.log("[CW] Report saved. Run complete.");
+    return { success: true };
   },
 });
 
@@ -501,27 +398,27 @@ function buildCwRuntime(): CopilotRuntime {
     const authSkill = loadCwSkill("cw-auth-agent.yaml");
     authPrompt = authSkill.system_prompt;
   } catch {
-    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, and cwSubmitOtp tools. When OTP is required, ask the user for the verification code and use cwSubmitOtp.";
+    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, cwSubmitOtp, and cwAuthComplete tools.";
   }
 
   try {
     const navSkill = loadCwSkill("cw-navigator-agent.yaml");
     navigatorPrompt = navSkill.system_prompt;
   } catch {
-    navigatorPrompt = "You are the Navigator Agent. Navigate to Transaction Logs, apply date filters, and extract table data.";
+    navigatorPrompt = "You are the Navigator Agent. Navigate to Transaction Logs, apply date filters, extract table data, then call cwNavigationComplete.";
   }
 
   try {
     const repSkill = loadCwSkill("cw-reporter-agent.yaml");
     reporterPrompt = repSkill.system_prompt;
   } catch {
-    reporterPrompt = "You are the Reporter Agent. Analyze extracted JSON records and produce an error summary report. Use the pre-computed groupings (statusBreakdown, errorsByType, errorsByOrg) to build your analysis.";
+    reporterPrompt = "You are the Reporter Agent. Call cwGetRunData, analyze errors, produce a markdown report, then call cwSaveReport.";
   }
 
   const authAgent = new BuiltInAgent({
     model,
     prompt: authPrompt,
-    tools: [cwStartRunTool, cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool],
+    tools: [cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool],
     maxSteps: 10,
   });
 
@@ -535,7 +432,7 @@ function buildCwRuntime(): CopilotRuntime {
   const reporterAgent = new BuiltInAgent({
     model,
     prompt: reporterPrompt,
-    tools: [cwGetRunDataTool, cwSaveReportTool, cwListRunsTool],
+    tools: [cwGetRunDataTool, cwSaveReportTool],
     maxSteps: 10,
   });
 
@@ -595,39 +492,21 @@ export function registerCwCopilotKitRoute(app: Express) {
   });
 }
 
-export function registerCwRunsRoute(app: Express) {
-  app.get("/api/cw/runs", async (_req, res) => {
-    try {
-      const runs = await db
-        .select({
-          id: cwRuns.id,
-          status: cwRuns.status,
-          recordCount: cwRuns.recordCount,
-          errorCount: cwRuns.errorCount,
-          parameters: cwRuns.parameters,
-          screenshotUrls: cwRuns.screenshotUrls,
-          startedAt: cwRuns.startedAt,
-          completedAt: cwRuns.completedAt,
-        })
-        .from(cwRuns)
-        .orderBy(desc(cwRuns.startedAt))
-        .limit(20);
-      res.json({ runs });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
+export function registerCwStatusRoute(app: Express) {
+  app.get("/api/cw/status", (_req, res) => {
+    res.json({
+      phase: cwSession.phase,
+      daysBack: cwSession.daysBack,
+      recordCount: cwSession.recordCount,
+      errorCount: cwSession.errorCount,
+    });
   });
 
-  app.get("/api/cw/runs/:id", async (req, res): Promise<void> => {
-    try {
-      const run = await db.select().from(cwRuns).where(eq(cwRuns.id, req.params.id)).limit(1);
-      if (!run[0]) {
-        res.status(404).json({ error: "Run not found" });
-        return;
-      }
-      res.json(run[0]);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
+  app.post("/api/cw/reset", (_req, res) => {
+    const pw = getPlaywrightService();
+    pw.setPhase("idle");
+    resetCwSession();
+    console.log("[CW] Session reset via API");
+    res.json({ success: true });
   });
 }
