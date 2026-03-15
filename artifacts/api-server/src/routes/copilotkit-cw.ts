@@ -222,8 +222,8 @@ const cwAuthCompleteTool = defineTool({
     const pw = getPlaywrightService();
     const runId = providedRunId || pw.getRunId();
     const phase = pw.getCurrentPhase();
-    if (phase !== "authenticating" && phase !== "authenticated" && phase !== "waitingForOtp") {
-      return { success: false, error: `Cannot complete auth in '${phase}' phase` };
+    if (phase !== "authenticating" && phase !== "authenticated") {
+      return { success: false, error: `Cannot complete auth in '${phase}' phase — OTP must be verified first if required` };
     }
     await pw.updateRun({ status: "authenticated" });
     await pw.addRunStep({ type: "authenticating", content: "Authentication complete" });
