@@ -21,6 +21,8 @@ export default function Home() {
   const navSwitchDoneRef = useRef(false);
   const repSwitchDoneRef = useRef(false);
   const activeAgentRef = useRef(activeAgent);
+  const pendingNavTriggerRef = useRef(false);
+  const pendingRepTriggerRef = useRef(false);
   useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
 
   const { messages, appendMessage, reset } = useCopilotChat({
@@ -28,6 +30,12 @@ export default function Home() {
       setPollingActive(true);
     },
   });
+  // Keep refs always pointing to the latest appendMessage/reset so timeouts
+  // that fire 1200ms after an agent switch always call the fresh versions.
+  const appendMessageRef = useRef(appendMessage);
+  const resetRef = useRef(reset);
+  useEffect(() => { appendMessageRef.current = appendMessage; }, [appendMessage]);
+  useEffect(() => { resetRef.current = reset; }, [reset]);
 
   // Auto-show OTP input when the auth agent mentions OTP/verification in its reply.
   // This avoids calling uiRequestOtp as an LLM tool (which leaves dangling tool calls
@@ -63,12 +71,51 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── Agent-change trigger effect ─────────────────────────────────────────────
+  // Fires AFTER CopilotKit has re-rendered with the new agent and fresh hook refs.
+  // Using a 1200ms delay gives CopilotKit time to fully reconnect before we call
+  // appendMessage — this prevents stale-ref issues that broke the 500ms setTimeout
+  // approach that lived inside the polling closure.
+  const navDaysBackRef = useRef(navDaysBack);
+  useEffect(() => { navDaysBackRef.current = navDaysBack; }, [navDaysBack]);
+
+  useEffect(() => {
+    if (pendingNavTriggerRef.current && activeAgent === "cw-navigator") {
+      pendingNavTriggerRef.current = false;
+      const days = navDaysBackRef.current;
+      const timer = setTimeout(() => {
+        resetRef.current();
+        appendMessageRef.current(
+          new TextMessage({
+            id: `nav-trigger-${Date.now()}`,
+            role: MessageRole.User,
+            content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, extract all table rows, then call cwNavigationComplete.`,
+          })
+        );
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+    if (pendingRepTriggerRef.current && activeAgent === "cw-reporter") {
+      pendingRepTriggerRef.current = false;
+      const timer = setTimeout(() => {
+        resetRef.current();
+        appendMessageRef.current(
+          new TextMessage({
+            id: `rep-trigger-${Date.now()}`,
+            role: MessageRole.User,
+            content: `Extraction complete. Call cwGetRunData, analyze the transactions, and generate the full error analysis report. Then call cwSaveReport with the report.`,
+          })
+        );
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgent]);
+
   // ─── Status Polling ─────────────────────────────────────────────────────────
   // Poll /api/cw/status (in-memory, no DB) every 3 seconds.
-  // Drives agent transitions based on phase changes:
-  //   idle → authenticated  →  switch to Navigator
-  //   authenticated → extracted  →  switch to Reporter
-  //   extracted → complete  →  mark run done
+  // Drives agent transitions based on phase changes — ONLY sets agent/flags here,
+  // never calls appendMessage directly (avoids stale-closure issues).
   useEffect(() => {
     if (!pollingActive || runComplete) return;
 
@@ -91,36 +138,17 @@ export default function Home() {
           !navSwitchDoneRef.current
         ) {
           navSwitchDoneRef.current = true;
-          const days = status.daysBack ?? 7;
-          setNavDaysBack(days);
+          setNavDaysBack(status.daysBack ?? 7);
+          pendingNavTriggerRef.current = true;
           setActiveAgent("cw-navigator");
-          setTimeout(() => {
-            reset();
-            appendMessage(
-              new TextMessage({
-                id: `nav-trigger-${Date.now()}`,
-                role: MessageRole.User,
-                content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, extract all table rows, then call cwNavigationComplete.`,
-              })
-            );
-          }, 500);
         } else if (
           status.phase === "extracted" &&
           agent === "cw-navigator" &&
           !repSwitchDoneRef.current
         ) {
           repSwitchDoneRef.current = true;
+          pendingRepTriggerRef.current = true;
           setActiveAgent("cw-reporter");
-          setTimeout(() => {
-            reset();
-            appendMessage(
-              new TextMessage({
-                id: `rep-trigger-${Date.now()}`,
-                role: MessageRole.User,
-                content: `Extraction complete (${status.recordCount} records, ${status.errorCount} errors). Call cwGetRunData, analyze the transactions, and generate the full error analysis report. Then call cwSaveReport with the report.`,
-              })
-            );
-          }, 500);
         } else if (status.phase === "complete" && agent === "cw-reporter") {
           setRunComplete(true);
           setPollingActive(false);
@@ -132,7 +160,7 @@ export default function Home() {
 
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
-  }, [pollingActive, runComplete, appendMessage, reset, setActiveAgent]);
+  }, [pollingActive, runComplete, setActiveAgent]);
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
