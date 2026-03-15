@@ -132,6 +132,12 @@ interface SessionData {
 
 type RunPhase = "idle" | "authenticating" | "authenticated" | "navigating" | "extracted" | "reporting" | "complete" | "error";
 
+interface Checkpoint {
+  phase: RunPhase;
+  url: string;
+  timestamp: string;
+}
+
 export class PlaywrightService {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -158,6 +164,41 @@ export class PlaywrightService {
     return this.browser;
   }
 
+  private async persistCheckpoint(url: string): Promise<void> {
+    this.lastCheckpointUrl = url;
+    if (!this.runId) return;
+    const checkpoint: Checkpoint = {
+      phase: this.currentPhase,
+      url,
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      const rows = await db.select({ parameters: cwRuns.parameters }).from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
+      if (rows[0]) {
+        const existing = rows[0].parameters as Record<string, unknown> || {};
+        await db
+          .update(cwRuns)
+          .set({ parameters: { ...existing, _checkpoint: checkpoint } })
+          .where(eq(cwRuns.id, this.runId));
+      }
+    } catch (err) {
+      console.warn("[PlaywrightService] Failed to persist checkpoint:", (err as Error).message);
+    }
+  }
+
+  private async loadCheckpointFromDb(): Promise<Checkpoint | null> {
+    if (!this.runId) return null;
+    try {
+      const rows = await db.select({ parameters: cwRuns.parameters }).from(cwRuns).where(eq(cwRuns.id, this.runId)).limit(1);
+      if (!rows[0]) return null;
+      const params = rows[0].parameters as Record<string, unknown>;
+      const checkpoint = params?._checkpoint as Checkpoint | undefined;
+      return checkpoint || null;
+    } catch {
+      return null;
+    }
+  }
+
   async recoverFromCrash(): Promise<boolean> {
     console.log(`[PlaywrightService] Attempting crash recovery (phase: ${this.currentPhase})...`);
     try {
@@ -165,14 +206,20 @@ export class PlaywrightService {
       this.context = null;
       this.page = null;
 
+      const checkpoint = await this.loadCheckpointFromDb();
+      const resumeUrl = checkpoint?.url || this.lastCheckpointUrl;
+
       const page = await this.getPage();
 
-      if (this.lastCheckpointUrl) {
-        console.log(`[PlaywrightService] Navigating back to checkpoint: ${this.lastCheckpointUrl}`);
-        await page.goto(this.lastCheckpointUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      if (resumeUrl) {
+        console.log(`[PlaywrightService] Navigating back to checkpoint: ${resumeUrl}`);
+        await page.goto(resumeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        if (checkpoint?.phase) {
+          this.currentPhase = checkpoint.phase;
+        }
       }
 
-      await this.addRunStep({ type: "error", content: "Browser crash detected — recovered and resumed" });
+      await this.addRunStep({ type: "error", content: `Browser crash detected — recovered and resumed from ${this.currentPhase} phase` });
       return true;
     } catch (err) {
       console.error("[PlaywrightService] Crash recovery failed:", (err as Error).message);
@@ -266,7 +313,7 @@ export class PlaywrightService {
         console.log("[PlaywrightService] Session invalid — redirected to login");
         return false;
       }
-      this.lastCheckpointUrl = url;
+      await this.persistCheckpoint(url);
       console.log("[PlaywrightService] Session valid — portal loaded");
       return true;
     } catch {
@@ -304,7 +351,7 @@ export class PlaywrightService {
           (await page.getByText("OTP").count()) > 0;
 
         const screenshotUrl = await takeScreenshotAsync(page, needsOtp ? "otp-required" : "post-login");
-        this.lastCheckpointUrl = page.url();
+        await this.persistCheckpoint(page.url());
 
         return { needsOtp, screenshotUrl };
       },
@@ -341,8 +388,8 @@ export class PlaywrightService {
 
       const screenshotUrl = await takeScreenshotAsync(page, stillOnOtpPage ? "otp-failed" : "otp-success");
       if (!stillOnOtpPage) {
-        this.lastCheckpointUrl = page.url();
         this.currentPhase = "authenticated";
+        await this.persistCheckpoint(page.url());
       }
 
       return { success: !stillOnOtpPage, screenshotUrl };
@@ -356,7 +403,7 @@ export class PlaywrightService {
     return withRetry(async () => {
       const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
       await page.goto(txUrl, { waitUntil: "networkidle", timeout: 60000 });
-      this.lastCheckpointUrl = page.url();
+      await this.persistCheckpoint(page.url());
       return await takeScreenshotAsync(page, "transaction-logs");
     }, { page, escalateTimeout: true, reloadOnStale: true });
   }

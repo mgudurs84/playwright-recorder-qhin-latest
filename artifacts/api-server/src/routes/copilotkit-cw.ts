@@ -40,16 +40,20 @@ function loadCwSkill(filename: string): SkillDef {
   return yaml.load(raw) as SkillDef;
 }
 
-function groupTransactionsByStatus(records: CwTransactionRecord[]): {
+interface GroupedAnalysis {
   totalRecords: number;
   errorCount: number;
   statusBreakdown: Record<string, number>;
   errorsByType: Record<string, CwTransactionRecord[]>;
   errorsByOrg: Record<string, number>;
-} {
+  errorsByHour: Record<string, number>;
+}
+
+function groupTransactionsByStatus(records: CwTransactionRecord[]): GroupedAnalysis {
   const statusBreakdown: Record<string, number> = {};
   const errorsByType: Record<string, CwTransactionRecord[]> = {};
   const errorsByOrg: Record<string, number> = {};
+  const errorsByHour: Record<string, number> = {};
   let errorCount = 0;
 
   for (const record of records) {
@@ -64,6 +68,16 @@ function groupTransactionsByStatus(records: CwTransactionRecord[]): {
 
       const org = record.initiatingOrgId || "Unknown";
       errorsByOrg[org] = (errorsByOrg[org] || 0) + 1;
+
+      if (record.timestamp) {
+        try {
+          const date = new Date(record.timestamp);
+          if (!isNaN(date.getTime())) {
+            const hour = `${String(date.getHours()).padStart(2, "0")}:00`;
+            errorsByHour[hour] = (errorsByHour[hour] || 0) + 1;
+          }
+        } catch {}
+      }
     }
   }
 
@@ -73,7 +87,24 @@ function groupTransactionsByStatus(records: CwTransactionRecord[]): {
     statusBreakdown,
     errorsByType,
     errorsByOrg,
+    errorsByHour,
   };
+}
+
+function validateExtractedRecords(records: CwTransactionRecord[]): { valid: boolean; issues: string[] } {
+  const issues: string[] = [];
+  if (records.length === 0) {
+    issues.push("No records were extracted from the table");
+  }
+  const requiredFields: Array<keyof CwTransactionRecord> = ["transactionId", "status"];
+  for (let i = 0; i < Math.min(records.length, 5); i++) {
+    for (const field of requiredFields) {
+      if (!records[i][field]) {
+        issues.push(`Record ${i}: missing required field '${field}'`);
+      }
+    }
+  }
+  return { valid: issues.length === 0, issues };
 }
 
 const cwStartRunTool = defineTool({
@@ -241,6 +272,7 @@ const cwExtractTransactionsTool = defineTool({
     const pw = getPlaywrightService();
     try {
       const { records, screenshotUrl } = await pw.extractTransactions(maxRecords);
+      const validation = validateExtractedRecords(records);
       const grouped = groupTransactionsByStatus(records);
 
       await pw.updateRun({
@@ -248,6 +280,21 @@ const cwExtractTransactionsTool = defineTool({
         recordCount: records.length,
         errorCount: grouped.errorCount,
       });
+
+      if (!validation.valid) {
+        await pw.addRunStep({
+          type: "extracting",
+          content: `Extraction completed with issues: ${validation.issues.join("; ")}`,
+          screenshotUrl,
+        });
+        return {
+          success: false,
+          totalRecords: records.length,
+          validationIssues: validation.issues,
+          screenshotUrl,
+        };
+      }
+
       await pw.addRunStep({
         type: "extracting",
         content: `Extracted ${records.length} transactions (${grouped.errorCount} errors)`,
@@ -306,7 +353,8 @@ const cwGetRunDataTool = defineTool({
         ])
       ),
       errorsByOrg: grouped.errorsByOrg,
-      records: records.slice(0, 100),
+      errorsByHour: grouped.errorsByHour,
+      records,
       parameters: run[0].parameters,
       steps: run[0].steps,
     };

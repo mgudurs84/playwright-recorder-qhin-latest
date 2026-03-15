@@ -12,19 +12,31 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 
+interface CwTransactionRecord {
+  timestamp: string;
+  transactionId: string;
+  transactionType: string;
+  memberName: string;
+  initiatingOrgId: string;
+  duration: string;
+  status: string;
+}
+
+interface CwRunStep {
+  type: string;
+  content: string;
+  screenshotUrl?: string;
+  timestamp: string;
+}
+
 interface CwRun {
   id: string;
   status: string;
   parameters: Record<string, unknown>;
   recordCount: number | null;
   errorCount: number | null;
-  records: any[];
-  steps: Array<{
-    type: string;
-    content: string;
-    screenshotUrl?: string;
-    timestamp: string;
-  }>;
+  records: CwTransactionRecord[];
+  steps: CwRunStep[];
   screenshotUrls: string[];
   report: string | null;
   startedAt: string;
