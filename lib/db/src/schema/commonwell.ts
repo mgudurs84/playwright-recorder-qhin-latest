@@ -39,7 +39,7 @@ export const cwRuns = pgTable("cw_runs", {
   errorCount: integer("error_count").default(0),
   records: jsonb("records").notNull().default([]),
   steps: jsonb("steps").notNull().default([]),
-  screenshotUrls: jsonb("screenshot_urls").notNull().default([]),
+  screenshotUrls: text("screenshot_urls").array().notNull().default([]),
   report: text("report"),
   startedAt: timestamp("started_at").notNull().defaultNow(),
   completedAt: timestamp("completed_at"),

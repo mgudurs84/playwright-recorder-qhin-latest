@@ -130,7 +130,7 @@ interface SessionData {
   };
 }
 
-type RunPhase = "idle" | "authenticating" | "authenticated" | "navigating" | "extracted" | "reporting" | "complete" | "error";
+type RunPhase = "idle" | "authenticating" | "waitingForOtp" | "authenticated" | "navigating" | "extracted" | "reporting" | "complete" | "error";
 
 interface Checkpoint {
   phase: RunPhase;
@@ -328,21 +328,23 @@ export class PlaywrightService {
   async validateSession(): Promise<boolean> {
     if (!this.page) return false;
     try {
-      await this.page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-      const url = this.page.url();
-      const isLoginPage =
-        url.includes("login") ||
-        url.includes("signin") ||
-        url.includes("auth") ||
-        (await this.page.$('input[type="password"]')) !== null;
+      return await withRetry(async () => {
+        await this.page!.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+        const url = this.page!.url();
+        const isLoginPage =
+          url.includes("login") ||
+          url.includes("signin") ||
+          url.includes("auth") ||
+          (await this.page!.$('input[type="password"]')) !== null;
 
-      if (isLoginPage) {
-        console.log("[PlaywrightService] Session invalid — redirected to login");
-        return false;
-      }
-      await this.persistCheckpoint(url);
-      console.log("[PlaywrightService] Session valid — portal loaded");
-      return true;
+        if (isLoginPage) {
+          console.log("[PlaywrightService] Session invalid — redirected to login");
+          return false;
+        }
+        await this.persistCheckpoint(url);
+        console.log("[PlaywrightService] Session valid — portal loaded");
+        return true;
+      }, { page: this.page, maxAttempts: 2, reloadOnStale: true });
     } catch {
       return false;
     }
@@ -377,6 +379,9 @@ export class PlaywrightService {
           (await page.getByText("one-time").count()) > 0 ||
           (await page.getByText("OTP").count()) > 0;
 
+        if (needsOtp) {
+          this.currentPhase = "waitingForOtp";
+        }
         const screenshotUrl = await takeScreenshotAsync(page, needsOtp ? "otp-required" : "post-login");
         await this.persistCheckpoint(page.url());
 
@@ -473,67 +478,71 @@ export class PlaywrightService {
   async waitForDataLoaded(): Promise<boolean> {
     const page = await this.getPage();
 
-    for (let attempt = 1; attempt <= 15; attempt++) {
-      const hasData = await page.evaluate(() => {
-        const grid = document.querySelector(".k-grid-content table tbody");
-        if (!grid) return false;
-        const rows = grid.querySelectorAll("tr");
-        if (rows.length === 0) return false;
-        const firstCell = rows[0].querySelector("td");
-        if (firstCell && firstCell.textContent?.trim() === "No data found") return false;
-        return true;
-      });
+    return withRetry(async () => {
+      for (let attempt = 1; attempt <= 15; attempt++) {
+        const hasData = await page.evaluate(() => {
+          const grid = document.querySelector(".k-grid-content table tbody");
+          if (!grid) return false;
+          const rows = grid.querySelectorAll("tr");
+          if (rows.length === 0) return false;
+          const firstCell = rows[0].querySelector("td");
+          if (firstCell && firstCell.textContent?.trim() === "No data found") return false;
+          return true;
+        });
 
-      if (hasData) {
-        console.log(`[PlaywrightService] Data loaded (attempt ${attempt})`);
-        return true;
+        if (hasData) {
+          console.log(`[PlaywrightService] Data loaded (attempt ${attempt})`);
+          return true;
+        }
+        console.log(`[PlaywrightService] Waiting for data... (${attempt}/15)`);
+        await page.waitForTimeout(2000);
       }
-      console.log(`[PlaywrightService] Waiting for data... (${attempt}/15)`);
-      await page.waitForTimeout(2000);
-    }
-    return false;
+      return false;
+    }, { page, reloadOnStale: true });
   }
 
   async extractViaKendoDataSource(maxRecords: number): Promise<CwTransactionRecord[] | null> {
     const page = await this.getPage();
 
     try {
-      const records = await page.evaluate((max: number) => {
-        const gridEl = document.querySelector("[data-role='grid']") as HTMLElement & {
-          kendoGrid?: {
-            dataSource: {
-              data(): Array<Record<string, string>>;
+      const records = await withRetry(async () => {
+        return page.evaluate((max: number) => {
+          const gridEl = document.querySelector("[data-role='grid']") as HTMLElement & {
+            kendoGrid?: {
+              dataSource: {
+                data(): Array<Record<string, string>>;
+              };
             };
           };
-        };
-        if (!gridEl?.kendoGrid) return null;
-        const ds = gridEl.kendoGrid.dataSource;
-        if (!ds) return null;
-        const allData = ds.data();
-        const results: Array<{
-          timestamp: string;
-          transactionId: string;
-          transactionType: string;
-          memberName: string;
-          initiatingOrgId: string;
-          duration: string;
-          status: string;
-        }> = [];
-        const limit = max > 0 ? Math.min(allData.length, max) : allData.length;
-        for (let i = 0; i < limit; i++) {
-          const item = allData[i];
-          results.push({
-            timestamp: item.Timestamp || item.timestamp || "",
-            transactionId: item.TransactionId || item.transactionId || "",
-            transactionType: item.TransactionType || item.transactionType || "",
-            memberName: item.MemberName || item.memberName || "",
-            initiatingOrgId: item.InitiatingOrgId || item.initiatingOrgId || "",
-            duration: item.Duration || item.duration || "",
-            status: item.Status || item.status || "",
-          });
-        }
-        return results;
-      }, maxRecords);
+          if (!gridEl?.kendoGrid) return null;
+          const ds = gridEl.kendoGrid.dataSource;
+          if (!ds) return null;
+          const allData = ds.data();
+          const results: Array<{
+            timestamp: string;
+            transactionId: string;
+            transactionType: string;
+            memberName: string;
+            initiatingOrgId: string;
+            duration: string;
+            status: string;
+          }> = [];
+          const limit = max > 0 ? Math.min(allData.length, max) : allData.length;
+          for (let i = 0; i < limit; i++) {
+            const item = allData[i];
+            results.push({
+              timestamp: item.Timestamp || item.timestamp || "",
+              transactionId: item.TransactionId || item.transactionId || "",
+              transactionType: item.TransactionType || item.transactionType || "",
+              memberName: item.MemberName || item.memberName || "",
+              initiatingOrgId: item.InitiatingOrgId || item.initiatingOrgId || "",
+              duration: item.Duration || item.duration || "",
+              status: item.Status || item.status || "",
+            });
+          }
+          return results;
+        }, maxRecords);
+      }, { page, reloadOnStale: true });
 
       if (records && records.length > 0) {
         console.log(`[PlaywrightService] Kendo DataSource extraction: ${records.length} records`);

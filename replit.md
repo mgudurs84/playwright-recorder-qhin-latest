@@ -65,8 +65,10 @@ A chat-based Playwright automation tool at `artifacts/cw-recorder/`. Key feature
 - **DOM table extraction** via Kendo DataSource API fast path + DOM pagination fallback (no vision AI)
 - **Session persistence**: Browser sessions saved/loaded from PostgreSQL (`cw_sessions` table)
 - **Run tracking**: Automation runs with steps, records, screenshots (`cw_runs` table)
-- **Retry logic**: Exponential backoff on all Playwright calls, browser crash recovery
-- **Screenshot serving** at `/api/screenshots/*` from `/tmp/cw-screenshots`
+- **Retry logic**: `withRetry` wrapper on all Playwright operations (login, OTP submit, navigation, date filter, data loading, Kendo extraction, DOM pagination), exponential backoff, stale-element page reload, browser crash recovery
+- **OTP state machine**: Explicit `waitingForOtp` phase with phase guards on all tools — navigation/extraction tools reject calls until auth completes; OTP submit only allowed in `waitingForOtp` phase
+- **Phase guards**: All agent tools enforce phase ordering (idle → authenticating → waitingForOtp → authenticated → navigating → extracted → reporting → complete)
+- **Screenshot serving** at `/api/screenshots/*` from `/tmp/cw-screenshots` (CORS scoped to dev domain)
 
 ### CW Backend Routes
 - `POST /api/cw-copilotkit` — CopilotKit runtime for CW agents (separate from AutoResearch runtime)

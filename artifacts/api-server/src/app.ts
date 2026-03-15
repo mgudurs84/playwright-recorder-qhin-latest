@@ -15,7 +15,10 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use("/api/screenshots", express.static("/tmp/cw-screenshots", {
   maxAge: "1d",
   setHeaders: (res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    const devDomain = process.env.REPLIT_DEV_DOMAIN;
+    const origin = devDomain ? `https://${devDomain}` : "http://localhost";
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Cache-Control", "private, max-age=86400");
   },
 }));
 

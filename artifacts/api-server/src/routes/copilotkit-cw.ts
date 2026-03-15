@@ -182,6 +182,10 @@ const cwSubmitOtpTool = defineTool({
   }),
   execute: async ({ otp }) => {
     const pw = getPlaywrightService();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "waitingForOtp" && phase !== "authenticating") {
+      return { success: false, error: `Cannot submit OTP in '${phase}' phase — must be in 'waitingForOtp' phase` };
+    }
     try {
       const result = await pw.submitOtp(otp);
       if (result.success) {
@@ -217,9 +221,13 @@ const cwAuthCompleteTool = defineTool({
   execute: async ({ runId: providedRunId }) => {
     const pw = getPlaywrightService();
     const runId = providedRunId || pw.getRunId();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "authenticating" && phase !== "authenticated" && phase !== "waitingForOtp") {
+      return { success: false, error: `Cannot complete auth in '${phase}' phase` };
+    }
     await pw.updateRun({ status: "authenticated" });
     await pw.addRunStep({ type: "authenticating", content: "Authentication complete" });
-    return { success: true, runId, nextAgent: "cw-navigator" };
+    return { success: true, runId, nextAgent: "cw-navigator", currentPhase: "authenticated" };
   },
 });
 
@@ -229,6 +237,10 @@ const cwNavigateToTransactionsTool = defineTool({
   parameters: z.object({}),
   execute: async () => {
     const pw = getPlaywrightService();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "authenticated" && phase !== "navigating") {
+      return { success: false, error: `Cannot navigate in '${phase}' phase — authentication must be completed first` };
+    }
     try {
       const screenshotUrl = await pw.navigateToTransactionLogs();
       await pw.addRunStep({
@@ -255,6 +267,10 @@ const cwApplyDateFilterTool = defineTool({
   }),
   execute: async ({ daysBack }) => {
     const pw = getPlaywrightService();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "authenticated" && phase !== "navigating") {
+      return { success: false, error: `Cannot apply filter in '${phase}' phase — must navigate first` };
+    }
     try {
       const screenshotUrl = await pw.applyDateFilter(daysBack);
       const dataLoaded = await pw.waitForDataLoaded();
@@ -282,6 +298,10 @@ const cwExtractTransactionsTool = defineTool({
   }),
   execute: async ({ maxRecords }) => {
     const pw = getPlaywrightService();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "navigating" && phase !== "authenticated") {
+      return { success: false, error: `Cannot extract in '${phase}' phase — must navigate to transaction logs first` };
+    }
     try {
       const { records, screenshotUrl } = await pw.extractTransactions(maxRecords);
       const validation = validateExtractedRecords(records);
@@ -337,9 +357,13 @@ const cwNavigationCompleteTool = defineTool({
   execute: async ({ runId: providedRunId }) => {
     const pw = getPlaywrightService();
     const runId = providedRunId || pw.getRunId();
+    const phase = pw.getCurrentPhase();
+    if (phase !== "navigating" && phase !== "extracted") {
+      return { success: false, error: `Cannot complete navigation in '${phase}' phase` };
+    }
     await pw.updateRun({ status: "extracted" });
     await pw.addRunStep({ type: "extracting", content: "Extraction complete" });
-    return { success: true, runId, nextAgent: "cw-reporter" };
+    return { success: true, runId, nextAgent: "cw-reporter", currentPhase: "extracted" };
   },
 });
 
