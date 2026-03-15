@@ -15,6 +15,8 @@ export default function Home() {
   const [otpSubmitting, setOtpSubmitting] = useState(false);
   const [runComplete, setRunComplete] = useState(false);
   const [lastRunParams, setLastRunParams] = useState<{ daysBack: number } | null>(null);
+  const [navigatorTrigger, setNavigatorTrigger] = useState<{ runId: string; daysBack: number } | null>(null);
+  const [reporterTrigger, setReporterTrigger] = useState<string | null>(null);
 
   useEffect(() => {
     setActiveAgent("cw-auth");
@@ -23,6 +25,36 @@ export default function Home() {
   }, [setActiveAgent]);
 
   const { appendMessage } = useCopilotChat();
+
+  // Auto-trigger navigator after agent switch
+  useEffect(() => {
+    if (activeAgent === "cw-navigator" && navigatorTrigger) {
+      const { runId, daysBack } = navigatorTrigger;
+      setNavigatorTrigger(null);
+      appendMessage(
+        new TextMessage({
+          id: `nav-trigger-${Date.now()}`,
+          role: MessageRole.User,
+          content: `Authentication complete. Navigate to Transaction Logs, apply a ${daysBack}-day date filter, and extract all table rows. Run ID: ${runId}`,
+        })
+      );
+    }
+  }, [activeAgent, navigatorTrigger, appendMessage]);
+
+  // Auto-trigger reporter after agent switch
+  useEffect(() => {
+    if (activeAgent === "cw-reporter" && reporterTrigger) {
+      const runId = reporterTrigger;
+      setReporterTrigger(null);
+      appendMessage(
+        new TextMessage({
+          id: `rep-trigger-${Date.now()}`,
+          role: MessageRole.User,
+          content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${runId}`,
+        })
+      );
+    }
+  }, [activeAgent, reporterTrigger, appendMessage]);
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
@@ -58,13 +90,18 @@ export default function Home() {
 
   useCopilotAction({
     name: "uiSwitchToNavigator",
-    description: "Switches to the Navigator agent after auth is complete",
+    description: "Switches to the Navigator agent after auth is complete. Pass daysBack so the navigator knows how far back to filter.",
     parameters: [
       { name: "runId", type: "string", required: true },
+      { name: "daysBack", type: "number", required: false },
     ],
-    handler: async () => {
+    handler: async ({ runId, daysBack }) => {
       setActiveAgent("cw-navigator");
       setOtpMode(false);
+      setNavigatorTrigger({
+        runId: runId as string,
+        daysBack: (daysBack as number) || lastRunParams?.daysBack || 7,
+      });
       return { switched: true };
     },
     render: ({ status }) => {
@@ -86,8 +123,9 @@ export default function Home() {
     parameters: [
       { name: "runId", type: "string", required: true },
     ],
-    handler: async () => {
+    handler: async ({ runId }) => {
       setActiveAgent("cw-reporter");
+      setReporterTrigger(runId as string);
       return { switched: true };
     },
     render: ({ status }) => {
