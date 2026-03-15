@@ -4,95 +4,98 @@ import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
 import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useActiveCwAgent } from "@/contexts/agent-context";
 import { AgentStepper } from "@/components/agent-stepper";
 import { apiUrl } from "@/lib/utils";
 
+// Map server phase → stepper display step
+function phaseToStep(phase: string): "cw-auth" | "cw-navigator" | "cw-reporter" | "complete" {
+  if (phase === "authenticated" || phase === "navigating") return "cw-navigator";
+  if (phase === "extracted" || phase === "complete") return "cw-reporter";
+  return "cw-auth";
+}
+
+// Map server phase → chat instructions
+function phaseToInstructions(phase: string, daysBack: number): string {
+  if (phase === "authenticated" || phase === "navigating") {
+    return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${daysBack}), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
+  }
+  if (phase === "extracted" || phase === "complete") {
+    return "You are the CW Reporter. IMMEDIATELY call cwGetRunData. Analyze errors. Call cwSaveReport(report) with your full markdown analysis. Then call uiReportComplete(report).";
+  }
+  return "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession — if valid, call cwAuthComplete(daysBack) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack). STOP.";
+}
+
 export default function Home() {
-  const { activeAgent, setActiveAgent } = useActiveCwAgent();
+  const [phase, setPhase] = useState("idle");
+  const [daysBack, setDaysBack] = useState(7);
   const [otpMode, setOtpMode] = useState(false);
   const [otpValue, setOtpValue] = useState("");
   const [otpSubmitting, setOtpSubmitting] = useState(false);
   const [runComplete, setRunComplete] = useState(false);
-  const [navDaysBack, setNavDaysBack] = useState(7);
   const [pollingActive, setPollingActive] = useState(false);
 
-  const navSwitchDoneRef = useRef(false);
-  const repSwitchDoneRef = useRef(false);
-  const activeAgentRef = useRef(activeAgent);
-  useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
+  const navTriggeredRef = useRef(false);
+  const repTriggeredRef = useRef(false);
 
   const { messages, appendMessage, reset } = useCopilotChat({
     onSubmitMessage: () => { setPollingActive(true); },
   });
 
-  // Always-fresh ref so setTimeout callbacks never hold stale appendMessage
-  const appendMessageRef = useRef(appendMessage);
-  useEffect(() => { appendMessageRef.current = appendMessage; }, [appendMessage]);
-
   // Clear stale chat on mount
   useLayoutEffect(() => { reset(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reset to auth agent on mount
+  // Show OTP panel when agent text mentions a code/verification
   useEffect(() => {
-    setActiveAgent("cw-auth");
-    setRunComplete(false);
-    setOtpMode(false);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Show OTP panel when auth agent text mentions a code/verification
-  useEffect(() => {
-    if (activeAgent !== "cw-auth" || otpMode) return;
+    if (phase !== "idle" && phase !== "authenticating" && phase !== "waitingForOtp") return;
+    if (otpMode) return;
     const msgs = Array.isArray(messages) ? messages : [];
-    const last = [...msgs].reverse().find(
-      (m) => m.role === MessageRole.Assistant && "content" in m
-    );
+    const last = [...msgs].reverse().find(m => m.role === MessageRole.Assistant && "content" in m);
     if (last && "content" in last) {
       const t = (last.content as string).toLowerCase();
       if (t.includes("otp") || t.includes("verification code") || t.includes("enter the code") || t.includes("check your email")) {
         setOtpMode(true);
       }
     }
-  }, [messages, activeAgent, otpMode]);
+  }, [messages, phase, otpMode]);
 
-  // Poll /api/cw/status every 3s — switches agent and fires trigger after 800ms
+  // Poll /api/cw/status — update phase, fire trigger messages for navigator & reporter
   useEffect(() => {
     if (!pollingActive || runComplete) return;
     const interval = setInterval(async () => {
       try {
         const res = await fetch(apiUrl("/api/cw/status"));
         if (!res.ok) return;
-        const { phase, daysBack, recordCount, errorCount } = await res.json() as {
-          phase: string; daysBack: number; recordCount: number; errorCount: number;
-        };
-        const agent = activeAgentRef.current;
+        const status = await res.json() as { phase: string; daysBack: number; recordCount: number; errorCount: number };
 
-        if (phase === "authenticated" && agent === "cw-auth" && !navSwitchDoneRef.current) {
-          navSwitchDoneRef.current = true;
-          const days = daysBack ?? 7;
-          setNavDaysBack(days);
-          setActiveAgent("cw-navigator");
-          setTimeout(() => appendMessageRef.current(new TextMessage({
+        setPhase(status.phase);
+
+        // Trigger navigator — fires once when auth completes
+        if (status.phase === "authenticated" && !navTriggeredRef.current) {
+          navTriggeredRef.current = true;
+          setDaysBack(status.daysBack ?? 7);
+          appendMessage(new TextMessage({
             id: `nav-${Date.now()}`, role: MessageRole.User,
-            content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, extract all table rows, then call cwNavigationComplete.`,
-          })), 800);
+            content: `Authentication complete. Navigate to Transaction Logs, apply a ${status.daysBack ?? 7}-day date filter, extract all table rows, then call cwNavigationComplete.`,
+          }));
+        }
 
-        } else if (phase === "extracted" && agent === "cw-navigator" && !repSwitchDoneRef.current) {
-          repSwitchDoneRef.current = true;
-          setActiveAgent("cw-reporter");
-          setTimeout(() => appendMessageRef.current(new TextMessage({
+        // Trigger reporter — fires once when extraction completes
+        if (status.phase === "extracted" && !repTriggeredRef.current) {
+          repTriggeredRef.current = true;
+          appendMessage(new TextMessage({
             id: `rep-${Date.now()}`, role: MessageRole.User,
-            content: `Extraction complete (${recordCount} records, ${errorCount} errors). Call cwGetRunData, analyze the transactions, generate the full error analysis report, then call cwSaveReport.`,
-          })), 800);
+            content: `Extraction complete (${status.recordCount} records, ${status.errorCount} errors). Call cwGetRunData, analyze the transactions, generate the full error analysis report, then call cwSaveReport.`,
+          }));
+        }
 
-        } else if (phase === "complete" && agent === "cw-reporter") {
+        if (status.phase === "complete") {
           setRunComplete(true);
           setPollingActive(false);
         }
-      } catch { /* ignore polling errors */ }
+      } catch { /* ignore */ }
     }, 3000);
     return () => clearInterval(interval);
-  }, [pollingActive, runComplete, setActiveAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pollingActive, runComplete, appendMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
@@ -109,18 +112,18 @@ export default function Home() {
 
   const handleRunAgain = useCallback(async () => {
     try { await fetch(apiUrl("/api/cw/reset"), { method: "POST" }); } catch {}
-    navSwitchDoneRef.current = false;
-    repSwitchDoneRef.current = false;
-    setActiveAgent("cw-auth");
+    navTriggeredRef.current = false;
+    repTriggeredRef.current = false;
+    setPhase("idle");
     setRunComplete(false);
     setOtpMode(false);
     setPollingActive(true);
     reset();
     await appendMessage(new TextMessage({
       id: `rerun-${Date.now()}`, role: MessageRole.User,
-      content: `Run again — get the last ${navDaysBack} days of transaction errors`,
+      content: `Run again — get the last ${daysBack} days of transaction errors`,
     }));
-  }, [navDaysBack, setActiveAgent, appendMessage, reset]);
+  }, [daysBack, appendMessage, reset]);
 
   useCopilotAction({
     name: "uiReportComplete",
@@ -150,13 +153,6 @@ export default function Home() {
       </div>
     ),
   });
-
-  const chatInstructions =
-    activeAgent === "cw-auth"
-      ? "You are the CW Auth agent. Extract the daysBack value from the user's request (default 7). Call cwCheckSession — if valid, call cwAuthComplete(daysBack) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack). STOP — do NOT call anything else."
-      : activeAgent === "cw-navigator"
-      ? `You are the CW Navigator agent. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navDaysBack}), then cwExtractTransactions, then cwNavigationComplete. Do NOT call any switch actions.`
-      : "You are the CW Reporter agent. IMMEDIATELY call cwGetRunData. Analyze errors across all status/result/code fields. Call cwSaveReport(report) with your full markdown analysis. Then call uiReportComplete(report).";
 
   return (
     <div className="flex flex-col h-full">
@@ -191,7 +187,7 @@ export default function Home() {
         </motion.div>
 
         <div className="mt-4">
-          <AgentStepper currentAgent={activeAgent} />
+          <AgentStepper currentAgent={runComplete ? "complete" : phaseToStep(phase)} />
         </div>
       </div>
 
@@ -204,7 +200,7 @@ export default function Home() {
                 initial: "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the CommonWell portal, extract transaction logs, and analyze errors for you.\n\nTry: *\"Get last 7 days of transaction errors\"*",
                 placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of transaction errors...",
               }}
-              instructions={chatInstructions}
+              instructions={phaseToInstructions(phase, daysBack)}
               className="h-full"
             />
           </div>
@@ -244,7 +240,7 @@ export default function Home() {
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4">
                 <button onClick={handleRunAgain} className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors">
                   <RotateCcw className="w-4 h-4" />
-                  Run Again ({navDaysBack} days)
+                  Run Again ({daysBack} days)
                 </button>
               </motion.div>
             )}

@@ -376,61 +376,22 @@ let cachedCwHandler: ReturnType<typeof copilotRuntimeNodeHttpEndpoint> | null = 
 function buildCwRuntime(): CopilotRuntime {
   const model = createVertexModel();
 
-  let authPrompt: string;
-  let navigatorPrompt: string;
-  let reporterPrompt: string;
-
-  try {
-    const authSkill = loadCwSkill("cw-auth-agent.yaml");
-    authPrompt = authSkill.system_prompt;
-  } catch {
-    authPrompt = "You are the Auth Agent. Authenticate with the CommonWell portal using cwCheckSession, cwLogin, cwSubmitOtp, and cwAuthComplete tools.";
-  }
-
-  try {
-    const navSkill = loadCwSkill("cw-navigator-agent.yaml");
-    navigatorPrompt = navSkill.system_prompt;
-  } catch {
-    navigatorPrompt = "You are the Navigator Agent. Navigate to Transaction Logs, apply date filters, extract table data, then call cwNavigationComplete.";
-  }
-
-  try {
-    const repSkill = loadCwSkill("cw-reporter-agent.yaml");
-    reporterPrompt = repSkill.system_prompt;
-  } catch {
-    reporterPrompt = "You are the Reporter Agent. Call cwGetRunData, analyze errors, produce a markdown report, then call cwSaveReport.";
-  }
-
-  const authAgent = new BuiltInAgent({
+  const combinedAgent = new BuiltInAgent({
     model,
-    prompt: authPrompt,
-    tools: [cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool],
-    maxSteps: 10,
-  });
-
-  const navigatorAgent = new BuiltInAgent({
-    model,
-    prompt: navigatorPrompt,
-    tools: [cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwExtractTransactionsTool, cwNavigationCompleteTool],
-    maxSteps: 15,
-  });
-
-  const reporterAgent = new BuiltInAgent({
-    model,
-    prompt: reporterPrompt,
-    tools: [cwGetRunDataTool, cwSaveReportTool],
-    maxSteps: 10,
+    prompt: "You are the CommonWell Recorder agent. You handle authentication, navigation, and reporting in sequence. Follow the user's instructions precisely and call the tools they specify.",
+    tools: [
+      cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool,
+      cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwExtractTransactionsTool, cwNavigationCompleteTool,
+      cwGetRunDataTool, cwSaveReportTool,
+    ],
+    maxSteps: 30,
   });
 
   const runtime = new CopilotRuntime({
-    agents: {
-      "cw-auth": authAgent,
-      "cw-navigator": navigatorAgent,
-      "cw-reporter": reporterAgent,
-    },
+    agents: { "cw-combined": combinedAgent },
   });
 
-  console.log("[CW Runtime] Initialized with 3 agents: cw-auth, cw-navigator, cw-reporter");
+  console.log("[CW Runtime] Initialized with 1 combined agent: cw-combined");
   return runtime;
 }
 
@@ -457,9 +418,7 @@ export function registerCwCopilotKitRoute(app: Express) {
     res.json({
       version: "1.0.0",
       agents: {
-        "cw-auth": { name: "cw-auth", description: "Authenticates with CommonWell portal" },
-        "cw-navigator": { name: "cw-navigator", description: "Navigates and extracts transaction data" },
-        "cw-reporter": { name: "cw-reporter", description: "Analyzes records and produces error reports" },
+        "cw-combined": { name: "cw-combined", description: "CommonWell recorder — handles auth, navigation, and reporting in one session" },
       },
     });
   });
