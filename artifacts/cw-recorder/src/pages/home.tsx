@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction, useCopilotChat } from "@copilotkit/react-core";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
@@ -8,10 +8,6 @@ import { useActiveCwAgent } from "@/contexts/agent-context";
 import { AgentStepper } from "@/components/agent-stepper";
 import { apiUrl } from "@/lib/utils";
 
-type PendingSwitch =
-  | { type: "navigator"; runId: string; daysBack: number }
-  | { type: "reporter"; runId: string };
-
 export default function Home() {
   const { activeAgent, setActiveAgent } = useActiveCwAgent();
   const [otpMode, setOtpMode] = useState(false);
@@ -20,67 +16,131 @@ export default function Home() {
   const [runComplete, setRunComplete] = useState(false);
   const [lastRunParams, setLastRunParams] = useState<{ daysBack: number } | null>(null);
 
-  // Persisted context for instructions per agent
+  // Per-agent context passed down via chatInstructions
   const [navContext, setNavContext] = useState<{ runId: string; daysBack: number } | null>(null);
   const [repContext, setRepContext] = useState<string | null>(null);
 
-  // Pending agent switch — applied with delay AFTER the current stream ends
-  // This avoids disrupting the ongoing streaming connection
-  const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch | null>(null);
+  // Session tracking: set when user sends their first message, so we only
+  // look at runs created AFTER that moment (avoids stale runs from old sessions)
+  const sessionStartRef = useRef<number | null>(null);
+  const [pollingActive, setPollingActive] = useState(false);
 
-  // Ref to always access current activeAgent in handlers without stale closures
+  // Guards to prevent double-triggering agent switches
+  const navSwitchDoneRef = useRef(false);
+  const repSwitchDoneRef = useRef(false);
+
+  // Ref to always access current activeAgent in polling without stale closures
   const activeAgentRef = useRef(activeAgent);
   useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
+
+  const { appendMessage, reset } = useCopilotChat({
+    onSubmitMessage: () => {
+      // Activate polling the first time the user sends a message
+      if (!sessionStartRef.current) {
+        sessionStartRef.current = Date.now();
+      }
+      setPollingActive(true);
+    },
+  });
+
+  // Clear stale CopilotKit thread state synchronously on mount.
+  // Using useLayoutEffect ensures this fires before any CopilotKit
+  // reconnection requests, preventing MissingToolResultsError replays.
+  useLayoutEffect(() => {
+    reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     setActiveAgent("cw-auth");
     setRunComplete(false);
     setOtpMode(false);
-  }, [setActiveAgent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const { appendMessage, reset } = useCopilotChat();
-
-  // ─── Delayed agent switch ──────────────────────────────────────────────────
-  // When pendingSwitch is set by a handler, wait 800ms for the current
-  // agent's streaming response to fully complete, THEN switch the agent.
+  // ─── Status Polling ────────────────────────────────────────────────────────
+  // Instead of using frontend actions for agent switching (which causes
+  // MissingToolResultsError by leaving dangling tool calls on the LLM thread),
+  // we poll the DB run status every 3 seconds and switch agents when status changes.
+  // Polling only starts once the user sends their first message (pollingActive=true),
+  // and only considers runs created AFTER that moment (sessionStartRef) to avoid
+  // picking up stale runs from previous sessions.
   useEffect(() => {
-    if (!pendingSwitch) return;
-    const timer = setTimeout(() => {
-      if (pendingSwitch.type === "navigator") {
-        const { runId, daysBack } = pendingSwitch;
-        setNavContext({ runId, daysBack });
-        setActiveAgent("cw-navigator");
-        // After agent switch renders, reset message history and send trigger
-        setTimeout(() => {
-          reset();
-          appendMessage(
-            new TextMessage({
-              id: `nav-trigger-${Date.now()}`,
-              role: MessageRole.User,
-              content: `Authentication complete. Navigate to Transaction Logs, apply a ${daysBack}-day date filter, and extract all table rows. Run ID: ${runId}`,
-            })
-          );
-        }, 400);
-      } else {
-        const { runId } = pendingSwitch;
-        setRepContext(runId);
-        setActiveAgent("cw-reporter");
-        // After agent switch renders, reset message history and send trigger
-        setTimeout(() => {
-          reset();
-          appendMessage(
-            new TextMessage({
-              id: `rep-trigger-${Date.now()}`,
-              role: MessageRole.User,
-              content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${runId}`,
-            })
-          );
-        }, 400);
+    if (!pollingActive || runComplete) return;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(apiUrl("/api/cw/runs"));
+        if (!res.ok) return;
+        const { runs } = await res.json() as { runs: Array<{
+          id: string;
+          status: string;
+          startedAt: string;
+          parameters?: { daysBack?: number };
+        }> };
+
+        // Only consider runs started after the session began (with a 60s buffer
+        // to account for cwStartRun call lag after the user sends their message)
+        const sessionStart = sessionStartRef.current ?? Date.now();
+        const sessionRuns = runs.filter(r => {
+          const t = new Date(r.startedAt).getTime();
+          return t >= sessionStart - 60_000;
+        });
+        const latest = sessionRuns[0];
+        if (!latest) return;
+
+        const agent = activeAgentRef.current;
+
+        if (
+          latest.status === "authenticated" &&
+          agent === "cw-auth" &&
+          !navSwitchDoneRef.current
+        ) {
+          navSwitchDoneRef.current = true;
+          const days = latest.parameters?.daysBack ?? lastRunParams?.daysBack ?? 7;
+          setLastRunParams({ daysBack: days });
+          setNavContext({ runId: latest.id, daysBack: days });
+          setActiveAgent("cw-navigator");
+          setTimeout(() => {
+            reset();
+            appendMessage(
+              new TextMessage({
+                id: `nav-trigger-${Date.now()}`,
+                role: MessageRole.User,
+                content: `Authentication complete. Navigate to Transaction Logs, apply a ${days}-day date filter, and extract all table rows. Run ID: ${latest.id}`,
+              })
+            );
+          }, 500);
+        } else if (
+          latest.status === "extracted" &&
+          agent === "cw-navigator" &&
+          !repSwitchDoneRef.current
+        ) {
+          repSwitchDoneRef.current = true;
+          setRepContext(latest.id);
+          setActiveAgent("cw-reporter");
+          setTimeout(() => {
+            reset();
+            appendMessage(
+              new TextMessage({
+                id: `rep-trigger-${Date.now()}`,
+                role: MessageRole.User,
+                content: `Extraction complete. Analyze the transaction data and generate the error analysis report. Run ID: ${latest.id}`,
+              })
+            );
+          }, 500);
+        } else if (latest.status === "complete" && agent === "cw-reporter") {
+          setRunComplete(true);
+          setPollingActive(false);
+        }
+      } catch {
+        // Silently ignore polling errors
       }
-      setPendingSwitch(null);
-    }, 900);
-    return () => clearTimeout(timer);
-  }, [pendingSwitch, appendMessage, reset, setActiveAgent]);
+    };
+
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [pollingActive, runComplete, appendMessage, reset, setActiveAgent, lastRunParams]);
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
@@ -101,14 +161,18 @@ export default function Home() {
   }, [otpValue, appendMessage]);
 
   const handleRunAgain = useCallback(async () => {
+    // Reset session tracking for a fresh run
+    sessionStartRef.current = Date.now();
+    navSwitchDoneRef.current = false;
+    repSwitchDoneRef.current = false;
+
     setActiveAgent("cw-auth");
     setRunComplete(false);
     setOtpMode(false);
     setNavContext(null);
     setRepContext(null);
-    setPendingSwitch(null);
+    setPollingActive(true);
     const days = lastRunParams?.daysBack ?? 7;
-    // Clear messages for fresh auth run
     reset();
     await appendMessage(
       new TextMessage({
@@ -120,70 +184,9 @@ export default function Home() {
   }, [lastRunParams, setActiveAgent, appendMessage, reset]);
 
   // ─── Frontend Actions ──────────────────────────────────────────────────────
-
-  useCopilotAction({
-    name: "uiSwitchToNavigator",
-    description: "Switches to the Navigator agent after auth is complete. Pass daysBack so the navigator knows how far back to filter.",
-    parameters: [
-      { name: "runId", type: "string", required: true },
-      { name: "daysBack", type: "number", required: false },
-    ],
-    handler: async ({ runId, daysBack }) => {
-      // Guard: only the auth agent should switch to navigator
-      if (activeAgentRef.current !== "cw-auth") {
-        console.warn("[uiSwitchToNavigator] Blocked — called from wrong agent:", activeAgentRef.current);
-        return { switched: false, blocked: true };
-      }
-      const days = (daysBack as number) || lastRunParams?.daysBack || 7;
-      setLastRunParams({ daysBack: days });
-      setOtpMode(false);
-      // Don't switch agent here — set pending switch so the useEffect applies it
-      // AFTER the current streaming response finishes (avoids MissingToolResultsError)
-      setPendingSwitch({ type: "navigator", runId: runId as string, daysBack: days });
-      return { switched: true };
-    },
-    render: ({ status }) => {
-      if (status === "executing" || status === "complete") {
-        return (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20 text-primary text-sm font-medium">
-            <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            Authentication complete — switching to Navigator...
-          </div>
-        );
-      }
-      return <></>;
-    },
-  });
-
-  useCopilotAction({
-    name: "uiSwitchToReporter",
-    description: "Switches to the Reporter agent after navigation and extraction are complete",
-    parameters: [
-      { name: "runId", type: "string", required: true },
-    ],
-    handler: async ({ runId }) => {
-      // Guard: only the navigator agent should switch to reporter
-      if (activeAgentRef.current !== "cw-navigator") {
-        console.warn("[uiSwitchToReporter] Blocked — called from wrong agent:", activeAgentRef.current);
-        return { switched: false, blocked: true };
-      }
-      // Don't switch agent here — set pending switch so the useEffect applies it
-      // AFTER the current streaming response finishes (avoids Thread already running)
-      setPendingSwitch({ type: "reporter", runId: runId as string });
-      return { switched: true };
-    },
-    render: ({ status }) => {
-      if (status === "executing" || status === "complete") {
-        return (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20 text-primary text-sm font-medium">
-            <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            Extraction complete — switching to Reporter...
-          </div>
-        );
-      }
-      return <></>;
-    },
-  });
+  // NOTE: uiSwitchToNavigator and uiSwitchToReporter have been REMOVED.
+  // Agent switching is now handled purely by DB status polling (above).
+  // This eliminates the MissingToolResultsError caused by dangling LLM tool calls.
 
   useCopilotAction({
     name: "uiReportComplete",
@@ -283,9 +286,9 @@ export default function Home() {
   // ─── Per-agent instructions ───────────────────────────────────────────────
   const chatInstructions =
     activeAgent === "cw-auth"
-      ? "You are the CW Auth agent. When the user asks for transaction data, extract the daysBack value (default 7). Call cwStartRun(daysBack), then cwCheckSession. If session is valid skip login. If not, call cwLogin, handle OTP with uiRequestOtp. After authentication, call cwAuthComplete then immediately call uiSwitchToNavigator(runId, daysBack). Also call uiTrackRunParams(daysBack)."
+      ? "You are the CW Auth agent. When the user asks for transaction data, extract the daysBack value (default 7). Call uiTrackRunParams(daysBack) first to record the params. Then call cwStartRun(daysBack), then cwCheckSession. If session is valid skip login. If not, call cwLogin, handle OTP with uiRequestOtp. After authentication, call cwAuthComplete. The system will automatically switch to the Navigator. Do NOT call any switch actions."
       : activeAgent === "cw-navigator"
-      ? `You are the CW Navigator agent. Authentication is complete. Run ID: ${navContext?.runId ?? "see trigger message"}. Date range: last ${navContext?.daysBack ?? 7} days. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navContext?.daysBack ?? 7}), then cwExtractTransactions, then cwNavigationComplete("${navContext?.runId ?? ""}"), then call uiSwitchToReporter("${navContext?.runId ?? ""}"). Do not wait for user input.`
+      ? `You are the CW Navigator agent. Authentication is complete. Run ID: ${navContext?.runId ?? "see trigger message"}. Date range: last ${navContext?.daysBack ?? 7} days. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${navContext?.daysBack ?? 7}), then cwExtractTransactions, then cwNavigationComplete("${navContext?.runId ?? ""}"). The system will automatically switch to the Reporter. Do NOT call any switch actions.`
       : `You are the CW Reporter agent. Extraction is complete. Run ID: ${repContext ?? "see trigger message"}. IMMEDIATELY call cwGetRunData("${repContext ?? ""}"), analyze the records for errors (check all status/result/code fields for error patterns), call cwSaveReport("${repContext ?? ""}", report), then call uiReportComplete("${repContext ?? ""}", report). Present the full error analysis to the user.`;
 
   return (

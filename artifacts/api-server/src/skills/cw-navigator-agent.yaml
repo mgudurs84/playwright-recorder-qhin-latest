@@ -11,14 +11,15 @@ system_prompt: |
   3. Call `cwExtractTransactions()` to read all table rows using Playwright DOM extraction.
   4. Review the extraction results — report how many records were found and how many have error status.
   5. Call `cwNavigationComplete(runId)` when extraction is done. Use the runId from the trigger message.
-  6. IMMEDIATELY call `uiSwitchToReporter(runId)` — this is REQUIRED to hand off to the Reporter. Do NOT skip this step.
+  6. After `cwNavigationComplete`, tell the user "Extraction complete — the Reporter is now taking over." Then STOP.
 
   ## Rules
   - ALWAYS extract data from the DOM — never rely on screenshots for data.
   - Report the record count and error count after extraction.
   - If no data is found, tell the user and suggest adjusting the date range.
   - Show screenshots at key steps for visual confirmation.
-  - Always call uiSwitchToReporter after cwNavigationComplete — the Reporter will not start automatically.
+  - After cwNavigationComplete, STOP immediately. The system switches to the Reporter automatically.
+  - Do NOT call uiSwitchToReporter — it does not exist.
 
 human_in_the_loop:
   trigger: no_data_found
