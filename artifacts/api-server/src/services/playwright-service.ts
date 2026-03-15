@@ -344,7 +344,7 @@ export class PlaywrightService {
         await this.persistCheckpoint(url);
         console.log("[PlaywrightService] Session valid — portal loaded");
         return true;
-      }, { page: this.page, maxAttempts: 2, reloadOnStale: true });
+      }, { page: this.page, maxAttempts: 2, reloadOnStale: true, escalateTimeout: true });
     } catch {
       return false;
     }
@@ -425,7 +425,7 @@ export class PlaywrightService {
       }
 
       return { success: !stillOnOtpPage, screenshotUrl };
-    }, { page, reloadOnStale: true });
+    }, { page, reloadOnStale: true, escalateTimeout: true });
   }
 
   async navigateToTransactionLogs(): Promise<string> {
@@ -498,7 +498,7 @@ export class PlaywrightService {
         await page.waitForTimeout(2000);
       }
       return false;
-    }, { page, reloadOnStale: true });
+    }, { page, reloadOnStale: true, escalateTimeout: true });
   }
 
   async extractViaKendoDataSource(maxRecords: number): Promise<CwTransactionRecord[] | null> {
@@ -542,7 +542,7 @@ export class PlaywrightService {
           }
           return results;
         }, maxRecords);
-      }, { page, reloadOnStale: true });
+      }, { page, reloadOnStale: true, escalateTimeout: true });
 
       if (records && records.length > 0) {
         console.log(`[PlaywrightService] Kendo DataSource extraction: ${records.length} records`);
@@ -588,7 +588,7 @@ export class PlaywrightService {
           });
           return txns;
         });
-      }, { page, reloadOnStale: true });
+      }, { page, reloadOnStale: true, escalateTimeout: true });
 
       console.log(`[PlaywrightService] Page ${pageNum}: ${pageTransactions.length} transactions`);
       allTransactions.push(...pageTransactions);
@@ -605,7 +605,7 @@ export class PlaywrightService {
       await withRetry(async () => {
         await nextButton.click();
         await page.waitForTimeout(2000);
-      }, { page, reloadOnStale: true });
+      }, { page, reloadOnStale: true, escalateTimeout: true });
       pageNum++;
     }
 

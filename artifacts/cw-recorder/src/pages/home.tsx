@@ -6,6 +6,7 @@ import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw } from "luci
 import { motion, AnimatePresence } from "framer-motion";
 import { useActiveCwAgent } from "@/contexts/agent-context";
 import { AgentStepper } from "@/components/agent-stepper";
+import { apiUrl } from "@/lib/utils";
 
 export default function Home() {
   const { activeAgent, setActiveAgent } = useActiveCwAgent();
@@ -146,7 +147,7 @@ export default function Home() {
             </div>
             {args?.screenshotUrl && (
               <img
-                src={args.screenshotUrl as string}
+                src={apiUrl(args.screenshotUrl as string)}
                 alt="OTP page screenshot"
                 className="w-full rounded-lg border border-border"
               />
@@ -173,7 +174,7 @@ export default function Home() {
       return (
         <div className="space-y-1">
           <img
-            src={args.screenshotUrl as string}
+            src={apiUrl(args.screenshotUrl as string)}
             alt={args.caption as string || "Automation screenshot"}
             className="w-full rounded-lg border border-border"
           />

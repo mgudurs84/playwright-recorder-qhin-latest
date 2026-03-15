@@ -11,6 +11,7 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { Link } from "wouter";
+import { apiUrl } from "@/lib/utils";
 
 interface CwTransactionRecord {
   timestamp: string;
@@ -53,8 +54,7 @@ export default function RunDetail() {
     if (!id) return;
     const fetchRun = async () => {
       try {
-        const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-        const res = await fetch(`${base}/api/cw/runs/${id}`);
+        const res = await fetch(apiUrl(`/api/cw/runs/${id}`));
         if (res.ok) setRun(await res.json());
       } catch {
       } finally {
@@ -188,13 +188,13 @@ export default function RunDetail() {
               </div>
               {step.screenshotUrl && (
                 <a
-                  href={step.screenshotUrl}
+                  href={apiUrl(step.screenshotUrl)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="shrink-0"
                 >
                   <img
-                    src={step.screenshotUrl}
+                    src={apiUrl(step.screenshotUrl)}
                     alt="Screenshot"
                     className="w-24 h-16 object-cover rounded border border-border/50 hover:border-primary/50 transition-colors"
                   />
@@ -228,12 +228,12 @@ export default function RunDetail() {
             {run.screenshotUrls.map((url, idx) => (
               <a
                 key={idx}
-                href={url}
+                href={apiUrl(url)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
                 <img
-                  src={url}
+                  src={apiUrl(url)}
                   alt={`Screenshot ${idx + 1}`}
                   className="w-full rounded-lg border border-border hover:border-primary/50 transition-colors"
                 />

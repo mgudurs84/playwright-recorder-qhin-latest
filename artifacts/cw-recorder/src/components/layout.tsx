@@ -1,6 +1,7 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
 import { formatDistanceToNow } from "date-fns";
+import { apiUrl } from "@/lib/utils";
 import {
   Monitor,
   Play,
@@ -33,8 +34,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     const fetchRuns = async () => {
       try {
-        const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-        const res = await fetch(`${base}/api/cw/runs`);
+        const res = await fetch(apiUrl("/api/cw/runs"));
         if (res.ok) {
           const data = await res.json();
           setRuns(data.runs || []);
