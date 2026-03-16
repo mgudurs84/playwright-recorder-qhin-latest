@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download, Loader2, Play, Search, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Shield, Navigation, FileText, Activity, KeyRound, RotateCcw, Download, Loader2, Play, Search, AlertCircle, CheckCircle2, BarChart3 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AgentStepper } from "@/components/agent-stepper";
 import { apiUrl } from "@/lib/utils";
@@ -169,24 +169,27 @@ export default function Home() {
       <div className="px-6 pt-8 pb-4 text-center">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 backdrop-blur-md mb-4">
-            <Monitor className="w-3.5 h-3.5 text-primary animate-pulse" />
+            <BarChart3 className="w-3.5 h-3.5 text-primary animate-pulse" />
             <span className="text-xs font-medium text-foreground/70 tracking-wide">
-              Playwright Automation · CommonWell Portal · Gemini 2.5 Flash
+              CVS Health · CommonWell CDR · Gemini 2.5 Flash
             </span>
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-2" style={{ fontFamily: "var(--font-display)" }}>
-            CommonWell{" "}
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">Recorder</span>
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-1" style={{ fontFamily: "var(--font-display)" }}>
+            <span className="text-primary">CDR</span>{" "}
+            <span className="text-foreground">Observability</span>
           </h1>
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">
+            CommonWell Health Alliance
+          </p>
           <p className="text-sm text-muted-foreground max-w-lg mx-auto">
-            Automated transaction log extraction and error analysis for the CommonWell Health Alliance portal.
+            Clinical Document Registry transaction monitoring, automated error detection and AI-powered analysis.
           </p>
         </motion.div>
 
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }} className="flex flex-wrap items-center justify-center gap-3 mt-4">
           {[
-            { icon: Shield, label: "Auto Login + OTP" },
-            { icon: Navigation, label: "DOM Table Extraction" },
+            { icon: Shield, label: "Automated Auth + OTP" },
+            { icon: Navigation, label: "CDR Transaction Logs" },
             { icon: FileText, label: "AI Error Analysis" },
           ].map(({ icon: Icon, label }) => (
             <div key={label} className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary/30 border border-border/50 text-xs text-muted-foreground">
@@ -206,7 +209,7 @@ export default function Home() {
         {!running && !complete && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-5">
             <p className="text-sm text-muted-foreground mb-3">
-              Enter a date range or a specific transaction ID to search for.
+              Enter a date range, record count, or a specific CDR transaction ID to monitor.
             </p>
             <div className="flex gap-2">
               <div className="flex-1 relative">

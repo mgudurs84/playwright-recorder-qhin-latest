@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap');
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
 @theme inline {
-  --font-sans: 'DM Sans', sans-serif;
+  --font-sans: 'Inter', sans-serif;
   --font-display: 'Syne', sans-serif;
 
   --color-background: hsl(var(--background));
@@ -27,36 +27,39 @@
 }
 
 :root {
-  --background: 200 15% 4%;
-  --foreground: 0 0% 98%;
+  /* CVS Health dark theme — deep navy background, CVS red primary */
+  --background: 222 25% 5%;
+  --foreground: 0 0% 97%;
 
-  --card: 200 15% 6%;
-  --card-foreground: 0 0% 98%;
+  --card: 222 25% 8%;
+  --card-foreground: 0 0% 97%;
 
-  --primary: 160 100% 40%;
-  --primary-foreground: 200 15% 4%;
+  /* CVS Red #CC0000 */
+  --primary: 0 100% 40%;
+  --primary-foreground: 0 0% 100%;
 
-  --secondary: 200 15% 12%;
-  --secondary-foreground: 0 0% 98%;
+  --secondary: 222 20% 13%;
+  --secondary-foreground: 0 0% 97%;
 
-  --muted: 200 15% 12%;
-  --muted-foreground: 200 5% 65%;
+  --muted: 222 20% 13%;
+  --muted-foreground: 222 10% 60%;
 
-  --accent: 35 100% 55%;
-  --accent-foreground: 200 15% 4%;
+  /* CVS Blue #003087 — lightened for dark bg */
+  --accent: 220 100% 55%;
+  --accent-foreground: 0 0% 100%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
 
-  --border: 200 15% 16%;
-  --ring: 160 100% 40%;
+  --border: 222 20% 16%;
+  --ring: 0 100% 40%;
 
   --radius: 0.75rem;
 }
 
 @layer base {
   body {
-    @apply bg-background text-foreground antialiased font-sans overflow-x-hidden selection:bg-primary/30 selection:text-primary;
+    @apply bg-background text-foreground antialiased font-sans overflow-x-hidden selection:bg-primary/20 selection:text-primary;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -80,26 +83,7 @@
   @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl;
 }
 
-.copilot-otp-mode textarea,
-.copilot-otp-mode [data-copilotkit-input],
-.copilot-otp-mode form:has(textarea) {
-  display: none !important;
-}
-.copilot-otp-mode > div > div:last-child:has(textarea) {
-  display: none !important;
-}
-
-/* Keep screenshots as compact thumbnails inside chat messages */
-[class*="copilotKit"] img,
-[class*="copilot-kit"] img,
-[class*="Message"] img {
-  max-width: 280px !important;
-  max-height: 180px !important;
-  width: auto !important;
-  height: auto !important;
-  border-radius: 8px;
-  border: 1px solid hsl(var(--border));
-  display: block;
-  margin-top: 6px;
-  cursor: zoom-in;
+/* CVS brand accent bar */
+.cvs-top-bar {
+  background: linear-gradient(90deg, hsl(0, 100%, 40%) 0%, hsl(0, 100%, 32%) 100%);
 }
