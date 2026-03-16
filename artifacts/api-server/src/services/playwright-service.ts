@@ -704,12 +704,18 @@ export class PlaywrightService {
       if (pageNum === 1 && pageTransactions.length > 0) {
         console.log(`[PlaywrightService] DOM columns: ${Object.keys(pageTransactions[0]).join(", ")}`);
       }
-      allTransactions.push(...pageTransactions.map(r => this.mapKendoRecord(r)));
+      const mapped = pageTransactions.map(r => this.mapKendoRecord(r));
+      if (maxRecords > 0) {
+        const remaining = maxRecords - allTransactions.length;
+        allTransactions.push(...mapped.slice(0, remaining));
+      } else {
+        allTransactions.push(...mapped);
+      }
       this.liveExtractionPage = pageNum;
       this.liveExtractionCount = allTransactions.length;
 
       if (maxRecords > 0 && allTransactions.length >= maxRecords) {
-        console.log(`[PlaywrightService] Max records (${maxRecords}) reached`);
+        console.log(`[PlaywrightService] Max records (${maxRecords}) reached, stopping at ${allTransactions.length}`);
         break;
       }
 

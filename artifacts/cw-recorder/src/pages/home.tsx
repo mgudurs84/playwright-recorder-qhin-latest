@@ -145,6 +145,7 @@ export default function Home() {
   }, [otpValue]);
 
   const handleReset = useCallback(async () => {
+    if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     await fetch(apiUrl("/api/cw/reset"), { method: "POST" }).catch(() => {});
     setStatus(null);
     setOtpValue("");
@@ -158,7 +159,13 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-4 space-y-3">
+      <div className="px-4 pt-5 pb-2">
+        <h1 className="text-xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
+          <span className="text-primary">CDR</span> Observability
+        </h1>
+        <p className="text-xs text-muted-foreground mt-0.5">CommonWell Health Alliance · Transaction Monitoring</p>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 pt-2 pb-4 space-y-3">
 
         {!running && !complete && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-5">
