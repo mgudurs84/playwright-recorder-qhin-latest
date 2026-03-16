@@ -73,12 +73,5 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
-  },
-  "dependencies": {
-    "@copilotkit/react-core": "^1.54.0",
-    "@copilotkit/react-ui": "^1.54.0",
-    "@copilotkit/runtime-client-gql": "^1.54.0",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
   }
 }
