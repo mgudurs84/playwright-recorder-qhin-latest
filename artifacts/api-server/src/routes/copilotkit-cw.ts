@@ -243,7 +243,10 @@ const cwAuthCompleteTool = defineTool({
     cwSession.transactionId = transactionId || null;
     cwSession.searchMode = transactionId ? "transaction_id" : "date";
     console.log(`[CW] Auth complete. mode=${cwSession.searchMode} daysBack=${cwSession.daysBack} txId=${cwSession.transactionId ?? "n/a"}`);
-    return { success: true, nextAgent: "cw-navigator", currentPhase: "authenticated", searchMode: cwSession.searchMode };
+    const nextInstruction = transactionId
+      ? `Auth complete. CALL cwNavigateToTransactions() RIGHT NOW. Then cwSearchByTransactionId("${transactionId}"). Then cwExtractTransactions(). Then cwNavigationComplete(). No text — tools only.`
+      : `Auth complete. CALL cwNavigateToTransactions() RIGHT NOW. Then cwApplyDateFilter(${cwSession.daysBack}). Then cwExtractTransactions(). Then cwNavigationComplete(). No text — tools only.`;
+    return { success: true, currentPhase: "authenticated", searchMode: cwSession.searchMode, NEXT_ACTION: nextInstruction };
   },
 });
 
@@ -426,7 +429,16 @@ function buildCwRuntime(): CopilotRuntime {
 
   const combinedAgent = new BuiltInAgent({
     model,
-    prompt: "You are the CommonWell Recorder agent. You handle authentication, navigation, and reporting in sequence. Follow the user's instructions precisely and call the tools they specify. IMPORTANT: whenever a tool result contains a screenshotUrl field, embed it in your reply as a markdown image so the user can see it: ![screenshot](screenshotUrl). Always show the screenshot inline — do not skip it.",
+    prompt: `You are the CommonWell Recorder agent working through three phases in sequence: Auth → Navigate → Report.
+
+CRITICAL RULES:
+1. After cwAuthComplete returns success, you MUST call cwNavigateToTransactions IMMEDIATELY as your very next action. Do NOT output any text or commentary — just call the tool.
+2. After cwNavigateToTransactions, call cwApplyDateFilter (or cwSearchByTransactionId) immediately.
+3. After the filter/search, call cwExtractTransactions immediately.
+4. After cwExtractTransactions, call cwNavigationComplete immediately.
+5. After cwNavigationComplete, call cwGetRunData, then cwSaveReport immediately.
+6. Never stop between phases to describe what you are about to do. Just do it.
+7. Whenever a tool result contains a screenshotUrl, embed it as a markdown image: ![screenshot](screenshotUrl).`,
     tools: [
       cwCheckSessionTool, cwLoginTool, cwSubmitOtpTool, cwAuthCompleteTool,
       cwNavigateToTransactionsTool, cwApplyDateFilterTool, cwSearchByTransactionIdTool, cwExtractTransactionsTool, cwNavigationCompleteTool,

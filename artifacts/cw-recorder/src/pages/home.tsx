@@ -100,8 +100,8 @@ export default function Home() {
           setTransactionId(status.transactionId ?? null);
           setSearchMode(status.searchMode ?? "date");
           const navMsg = status.transactionId
-            ? `Authentication complete. Navigate to Transaction Logs, search for transaction ID "${status.transactionId}", extract matching rows, then call cwNavigationComplete.`
-            : `Authentication complete. Navigate to Transaction Logs, apply a ${status.daysBack ?? 7}-day date filter, extract all table rows, then call cwNavigationComplete.`;
+            ? `[SYSTEM] Call cwNavigateToTransactions() now. Then call cwSearchByTransactionId("${status.transactionId}"). Then call cwExtractTransactions(). Then call cwNavigationComplete(). Do not output any text — call tools only.`
+            : `[SYSTEM] Call cwNavigateToTransactions() now. Then call cwApplyDateFilter(${status.daysBack ?? 7}). Then call cwExtractTransactions(). Then call cwNavigationComplete(). Do not output any text — call tools only.`;
           appendMessageRef.current(new TextMessage({
             id: `nav-${Date.now()}`, role: MessageRole.User,
             content: navMsg,
@@ -113,7 +113,7 @@ export default function Home() {
           repTriggeredRef.current = true;
           appendMessageRef.current(new TextMessage({
             id: `rep-${Date.now()}`, role: MessageRole.User,
-            content: `Extraction complete (${status.recordCount} records, ${status.errorCount} errors). Call cwGetRunData, analyze the transactions, generate the full error analysis report, then call cwSaveReport.`,
+            content: `[SYSTEM] Extraction complete (${status.recordCount} records). Call cwGetRunData() now. Then call cwSaveReport(report) with your full markdown error analysis. Do not output any text before calling these tools.`,
           }));
         }
 
