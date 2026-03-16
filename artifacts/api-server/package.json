@@ -10,17 +10,12 @@
   },
   "dependencies": {
     "@ai-sdk/google-vertex": "^4.0.80",
-    "@copilotkit/runtime": "^1.54.0",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
-    "@workspace/integrations-openai-ai-server": "workspace:*",
     "ai": "^6.0.116",
-    "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
-    "google-auth-library": "^10.6.1",
-    "js-yaml": "^4.1.1",
     "playwright": "^1.58.2",
     "zod": "catalog:"
   },
@@ -28,7 +23,6 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "catalog:",
     "esbuild": "^0.27.3",
     "tsx": "catalog:"

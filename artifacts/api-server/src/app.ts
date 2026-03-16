@@ -1,9 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
-import path from "path";
 import router from "./routes";
-import { registerCopilotKitRoute, registerCopilotKitInfoRoute, initializeRuntime } from "./routes/copilotkit";
-import { registerAgentsRoute } from "./routes/agents";
 import { registerCwRunnerRoutes } from "./routes/cw-runner";
 
 const app: Express = express();
@@ -22,13 +19,8 @@ app.use("/api/screenshots", express.static("/tmp/cw-screenshots", {
   },
 }));
 
-registerCopilotKitInfoRoute(app);
-registerCopilotKitRoute(app);
-registerAgentsRoute(app);
-
 registerCwRunnerRoutes(app);
 
 app.use("/api", router);
 
-export { initializeRuntime };
 export default app;
