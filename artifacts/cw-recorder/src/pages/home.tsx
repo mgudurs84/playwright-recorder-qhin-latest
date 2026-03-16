@@ -212,7 +212,7 @@ export default function Home() {
           </div>
 
           <AnimatePresence>
-            {phase === "navigating" && liveExtractionPage > 0 && (
+            {!runComplete && liveExtractionPage > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}

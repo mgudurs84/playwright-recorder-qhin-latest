@@ -330,6 +330,7 @@ const cwExtractTransactionsTool = defineTool({
     if (phase !== "navigating" && phase !== "authenticated") {
       return { success: false, error: `Cannot extract in '${phase}' phase — must navigate to transaction logs first` };
     }
+    cwSession.phase = "navigating";
     try {
       const { records, screenshotUrl } = await pw.extractTransactions(maxRecords);
       const validation = validateExtractedRecords(records);
