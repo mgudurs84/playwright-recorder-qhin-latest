@@ -1,164 +1,155 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { CopilotChat } from "@copilotkit/react-ui";
-import { useCopilotChat } from "@copilotkit/react-core";
-import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
-import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Shield, Navigation, FileText, Monitor, KeyRound, RotateCcw, Download, Loader2, Play, Search, AlertCircle, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AgentStepper } from "@/components/agent-stepper";
-import { apiUrl } from "@/lib/utils"; // used for Download Report href
+import { apiUrl } from "@/lib/utils";
 
-// Map server phase → stepper display step
-function phaseToStep(phase: string): "cw-auth" | "cw-navigator" | "cw-reporter" | "complete" {
-  if (phase === "authenticated" || phase === "navigating") return "cw-navigator";
-  if (phase === "extracted" || phase === "complete") return "cw-reporter";
+type RunnerPhase =
+  | "idle"
+  | "login:started"
+  | "otp:waiting"
+  | "navigating"
+  | "extracting"
+  | "reporting"
+  | "complete"
+  | "error";
+
+interface RunStatus {
+  phase: RunnerPhase;
+  daysBack: number;
+  transactionId: string | null;
+  searchMode: "date" | "transaction_id";
+  recordCount: number;
+  errorCount: number;
+  errorMessage: string | null;
+  reportFile: string | null;
+  screenshotUrls: string[];
+  liveExtractionPage: number;
+  liveExtractionCount: number;
+}
+
+function phaseToStep(phase: RunnerPhase): "cw-auth" | "cw-navigator" | "cw-reporter" | "complete" {
+  if (phase === "login:started" || phase === "otp:waiting") return "cw-auth";
+  if (phase === "navigating" || phase === "extracting") return "cw-navigator";
+  if (phase === "reporting" || phase === "complete") return "cw-reporter";
   return "cw-auth";
 }
 
-// Map server phase → chat instructions
-function phaseToInstructions(phase: string, daysBack: number, transactionId: string | null): string {
-  if (phase === "authenticated" || phase === "navigating") {
-    if (transactionId) {
-      return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwSearchByTransactionId("${transactionId}"), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
-    }
-    return `You are the CW Navigator. Authentication is complete. IMMEDIATELY call cwNavigateToTransactions, then cwApplyDateFilter(${daysBack}), then cwExtractTransactions, then cwNavigationComplete. Do NOT call auth tools.`;
+function phaseLabel(phase: RunnerPhase, liveExtractionPage: number, liveExtractionCount: number): string {
+  switch (phase) {
+    case "login:started": return "Logging in…";
+    case "otp:waiting": return "Waiting for OTP";
+    case "navigating": return "Navigating to Transaction Logs…";
+    case "extracting":
+      return liveExtractionPage > 0
+        ? `Extracting page ${liveExtractionPage} · ${liveExtractionCount.toLocaleString()} records so far…`
+        : "Starting extraction…";
+    case "reporting": return "Generating report with AI…";
+    case "complete": return "Complete";
+    case "error": return "Error";
+    default: return "";
   }
-  if (phase === "extracted" || phase === "complete") {
-    return "You are the CW Reporter. IMMEDIATELY call cwGetRunData. Analyze errors. Call cwSaveReport(report) with your full markdown analysis. Do NOT call any other tools after cwSaveReport.";
-  }
-  return "You are the CW Auth agent. From the user's request extract EITHER: (a) daysBack — a number of days e.g. 'last 3 days' → daysBack=3 (default 7), OR (b) a transactionId — a specific ID string. Call cwCheckSession — if valid, call cwAuthComplete(daysBack, transactionId) immediately. Otherwise call cwLogin. If OTP is needed, say 'Please enter the verification code sent to your email.' and WAIT. When the user provides the code, call cwSubmitOtp(otp). After success call cwAuthComplete(daysBack, transactionId). STOP.";
 }
 
+const isRunning = (phase: RunnerPhase) =>
+  phase !== "idle" && phase !== "complete" && phase !== "error";
+
 export default function Home() {
-  const [phase, setPhase] = useState("idle");
-  const [daysBack, setDaysBack] = useState(7);
-  const [transactionId, setTransactionId] = useState<string | null>(null);
-  const [searchMode, setSearchMode] = useState<"date" | "transaction_id">("date");
-  const [newSearchInput, setNewSearchInput] = useState("");
-  const [liveExtractionPage, setLiveExtractionPage] = useState(0);
-  const [liveExtractionCount, setLiveExtractionCount] = useState(0);
-  const [otpMode, setOtpMode] = useState(false);
+  const [status, setStatus] = useState<RunStatus | null>(null);
+  const [searchInput, setSearchInput] = useState("");
   const [otpValue, setOtpValue] = useState("");
   const [otpSubmitting, setOtpSubmitting] = useState(false);
-  const [runComplete, setRunComplete] = useState(false);
-  const [pollingActive, setPollingActive] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const navTriggeredRef = useRef(false);
-  const repTriggeredRef = useRef(false);
-
-  const { messages, appendMessage, reset } = useCopilotChat({
-    onSubmitMessage: () => { setPollingActive(true); },
-  });
-
-  // Keep a stable ref to appendMessage so the polling interval never restarts
-  // just because CopilotKit changed the function reference during streaming.
-  const appendMessageRef = useRef(appendMessage);
-  useEffect(() => { appendMessageRef.current = appendMessage; }, [appendMessage]);
-
-  // Clear stale chat on mount
-  useLayoutEffect(() => { reset(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // On mount: restore runComplete if server already has a report (e.g. after page refresh)
-  useEffect(() => {
-    fetch(apiUrl("/api/cw/report"), { method: "HEAD" }).then(res => {
-      if (res.ok) setRunComplete(true);
-    }).catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Show OTP panel when agent text mentions a code/verification
-  useEffect(() => {
-    if (phase !== "idle" && phase !== "authenticating" && phase !== "waitingForOtp") return;
-    if (otpMode) return;
-    const msgs = Array.isArray(messages) ? messages : [];
-    const last = [...msgs].reverse().find(m => m.role === MessageRole.Assistant && "content" in m);
-    if (last && "content" in last) {
-      const t = (last.content as string).toLowerCase();
-      if (t.includes("otp") || t.includes("verification code") || t.includes("enter the code") || t.includes("check your email")) {
-        setOtpMode(true);
-      }
-    }
-  }, [messages, phase, otpMode]);
-
-  // Poll /api/cw/status — update phase, fire trigger messages for navigator & reporter.
-  // Depends only on pollingActive/runComplete — appendMessage comes from ref to avoid
-  // restarting the interval every time CopilotKit changes the function reference mid-stream.
-  useEffect(() => {
-    if (!pollingActive || runComplete) return;
-    const interval = setInterval(async () => {
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(apiUrl("/api/cw/status"));
         if (!res.ok) return;
-        const status = await res.json() as { phase: string; daysBack: number; transactionId: string | null; searchMode: "date" | "transaction_id"; recordCount: number; errorCount: number; liveExtractionPage: number; liveExtractionCount: number };
-
-        setPhase(status.phase);
-        setLiveExtractionPage(status.liveExtractionPage ?? 0);
-        setLiveExtractionCount(status.liveExtractionCount ?? 0);
-
-        // Trigger navigator — fires once when auth completes
-        if (status.phase === "authenticated" && !navTriggeredRef.current) {
-          navTriggeredRef.current = true;
-          setDaysBack(status.daysBack ?? 7);
-          setTransactionId(status.transactionId ?? null);
-          setSearchMode(status.searchMode ?? "date");
-          const navMsg = status.transactionId
-            ? `[SYSTEM] Call cwNavigateToTransactions() now. Then call cwSearchByTransactionId("${status.transactionId}"). Then call cwExtractTransactions(). Then call cwNavigationComplete(). Do not output any text — call tools only.`
-            : `[SYSTEM] Call cwNavigateToTransactions() now. Then call cwApplyDateFilter(${status.daysBack ?? 7}). Then call cwExtractTransactions(). Then call cwNavigationComplete(). Do not output any text — call tools only.`;
-          appendMessageRef.current(new TextMessage({
-            id: `nav-${Date.now()}`, role: MessageRole.User,
-            content: navMsg,
-          }));
+        const s = await res.json() as RunStatus;
+        setStatus(s);
+        if (s.phase === "complete" || s.phase === "error" || s.phase === "idle") {
+          clearInterval(pollingRef.current!);
+          pollingRef.current = null;
         }
+      } catch {}
+    }, 2000);
+  }, []);
 
-        // Trigger reporter — fires once when extraction completes
-        if (status.phase === "extracted" && !repTriggeredRef.current) {
-          repTriggeredRef.current = true;
-          appendMessageRef.current(new TextMessage({
-            id: `rep-${Date.now()}`, role: MessageRole.User,
-            content: `[SYSTEM] Extraction complete (${status.recordCount} records). Call cwGetRunData() now. Then call cwSaveReport(report) with your full markdown error analysis. Do not output any text before calling these tools.`,
-          }));
-        }
+  useEffect(() => {
+    fetch(apiUrl("/api/cw/status"))
+      .then((r) => r.json())
+      .then((s: RunStatus) => {
+        setStatus(s);
+        if (isRunning(s.phase) || s.phase === "otp:waiting") startPolling();
+      })
+      .catch(() => {});
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+  }, [startPolling]);
 
-        if (status.phase === "complete") {
-          setRunComplete(true);
-          setPollingActive(false);
-        }
-      } catch { /* ignore */ }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [pollingActive, runComplete]); // appendMessage accessed via ref — no restart on reference change
+  const handleStart = useCallback(async (query?: string) => {
+    setStartError(null);
+    const q = (query ?? searchInput).trim();
+    let daysBack = 7;
+    let transactionId: string | null = null;
+
+    if (q) {
+      const dayMatch = q.match(/(\d+)\s*day/i);
+      if (dayMatch) {
+        daysBack = parseInt(dayMatch[1], 10);
+      } else if (/^\d+$/.test(q)) {
+        daysBack = parseInt(q, 10);
+      } else {
+        transactionId = q;
+      }
+    }
+
+    try {
+      const res = await fetch(apiUrl("/api/cw/run"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ daysBack, transactionId }),
+      });
+      const data = await res.json() as { started?: boolean; error?: string; phase?: string };
+      if (!res.ok) {
+        setStartError(data.error ?? "Failed to start");
+        return;
+      }
+      setSearchInput("");
+      startPolling();
+    } catch (err) {
+      setStartError((err as Error).message);
+    }
+  }, [searchInput, startPolling]);
 
   const handleOtpSubmit = useCallback(async () => {
     if (!otpValue.trim()) return;
     setOtpSubmitting(true);
     try {
-      await appendMessage(new TextMessage({
-        id: `otp-${Date.now()}`, role: MessageRole.User,
-        content: `My OTP code is: ${otpValue.trim()}`,
-      }));
+      await fetch(apiUrl("/api/cw/otp"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ otp: otpValue.trim() }),
+      });
       setOtpValue("");
-      setOtpMode(false);
-    } finally { setOtpSubmitting(false); }
-  }, [otpValue, appendMessage]);
+    } finally {
+      setOtpSubmitting(false);
+    }
+  }, [otpValue]);
 
-  const handleRunAgain = useCallback(async (query?: string) => {
-    const searchQuery = query ?? (searchMode === "transaction_id" && transactionId
-      ? `Find transaction ID ${transactionId}`
-      : `Get the last ${daysBack} days of transaction errors`);
-    try { await fetch(apiUrl("/api/cw/reset"), { method: "POST" }); } catch {}
-    navTriggeredRef.current = false;
-    repTriggeredRef.current = false;
-    setPhase("idle");
-    setRunComplete(false);
-    setOtpMode(false);
-    setTransactionId(null);
-    setSearchMode("date");
-    setNewSearchInput("");
-    setPollingActive(true);
-    reset();
-    await appendMessage(new TextMessage({
-      id: `rerun-${Date.now()}`, role: MessageRole.User,
-      content: searchQuery,
-    }));
-  }, [daysBack, transactionId, searchMode, appendMessage, reset]);
+  const handleReset = useCallback(async () => {
+    await fetch(apiUrl("/api/cw/reset"), { method: "POST" }).catch(() => {});
+    setStatus(null);
+    setOtpValue("");
+    setStartError(null);
+  }, []);
+
+  const phase = status?.phase ?? "idle";
+  const running = isRunning(phase) || phase === "otp:waiting";
+  const complete = phase === "complete";
+  const hasError = phase === "error";
 
   return (
     <div className="flex flex-col h-full">
@@ -183,7 +174,7 @@ export default function Home() {
           {[
             { icon: Shield, label: "Auto Login + OTP" },
             { icon: Navigation, label: "DOM Table Extraction" },
-            { icon: FileText, label: "Error Analysis" },
+            { icon: FileText, label: "AI Error Analysis" },
           ].map(({ icon: Icon, label }) => (
             <div key={label} className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary/30 border border-border/50 text-xs text-muted-foreground">
               <Icon className="w-3 h-3 text-primary" />
@@ -193,113 +184,159 @@ export default function Home() {
         </motion.div>
 
         <div className="mt-4">
-          <AgentStepper currentAgent={runComplete ? "complete" : phaseToStep(phase)} />
+          <AgentStepper currentAgent={complete ? "complete" : phaseToStep(phase)} />
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden px-4 pb-4">
-        <div className="h-full rounded-2xl border border-border overflow-hidden bg-card/30 backdrop-blur-sm flex flex-col">
-          <div className={`flex-1 overflow-hidden ${otpMode ? "copilot-otp-mode" : ""}`}>
-            <CopilotChat
-              labels={{
-                title: "CW Recorder Agent",
-                initial: "Hi! I'm your CommonWell Recorder agent.\n\nI'll log into the portal, extract transaction logs, and analyze errors.\n\nTry:\n- *\"Get last 7 days of transaction errors\"*\n- *\"Find transaction ID abc-1234-xyz\"*",
-                placeholder: otpMode ? "Enter OTP code..." : "e.g. Get last 7 days of errors, or find transaction ID abc-123...",
-              }}
-              instructions={phaseToInstructions(phase, daysBack, transactionId)}
-              className="h-full"
-            />
-          </div>
+      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
 
-          <AnimatePresence>
-            {!runComplete && liveExtractionPage > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="border-t border-border bg-card/60 backdrop-blur-sm px-4 py-2.5 flex items-center gap-3"
+        {!running && !complete && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-5">
+            <p className="text-sm text-muted-foreground mb-3">
+              Enter a date range or a specific transaction ID to search for.
+            </p>
+            <div className="flex gap-2">
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleStart()}
+                  placeholder="e.g. 'last 7 days', '3 days', or a transaction ID"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                />
+              </div>
+              <button
+                onClick={() => handleStart()}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
               >
-                <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
-                <span className="text-sm text-foreground/80">
-                  Extracting page <span className="font-semibold text-primary">{liveExtractionPage}</span>
-                  {" · "}
-                  <span className="font-semibold text-primary">{liveExtractionCount.toLocaleString()}</span> records so far…
-                </span>
-              </motion.div>
+                <Play className="w-4 h-4" />
+                Run
+              </button>
+            </div>
+            {startError && (
+              <p className="mt-2 text-xs text-red-400 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" /> {startError}
+              </p>
             )}
-          </AnimatePresence>
+          </motion.div>
+        )}
 
-          <AnimatePresence>
-            {otpMode && (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <KeyRound className="w-4 h-4 text-yellow-400" />
-                  <span className="text-sm font-medium text-yellow-400">Enter Verification Code</span>
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={otpValue}
-                    onChange={(e) => setOtpValue(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleOtpSubmit()}
-                    placeholder="Enter OTP code..."
-                    autoFocus
-                    className="flex-1 px-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
-                    disabled={otpSubmitting}
-                  />
-                  <button
-                    onClick={handleOtpSubmit}
-                    disabled={otpSubmitting || !otpValue.trim()}
-                    className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {otpSubmitting ? "Submitting..." : "Submit OTP"}
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <AnimatePresence>
+          {running && phase !== "otp:waiting" && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-5 flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-primary animate-spin shrink-0" />
+              <span className="text-sm text-foreground/80">
+                {phaseLabel(phase, status?.liveExtractionPage ?? 0, status?.liveExtractionCount ?? 0)}
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-          <AnimatePresence>
-            {runComplete && (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="border-t border-border bg-card/80 backdrop-blur-sm p-4 space-y-2">
-                <div className="flex gap-2">
-                  <a
-                    href={apiUrl("/api/cw/report")}
-                    download
-                    className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download Report
-                  </a>
-                  <button
-                    onClick={() => handleRunAgain()}
-                    className="flex-1 flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary text-sm font-medium hover:bg-primary/20 transition-colors"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    {searchMode === "transaction_id" ? `Search Again` : `Run Again (${daysBack}d)`}
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newSearchInput}
-                    onChange={(e) => setNewSearchInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && newSearchInput.trim() && handleRunAgain(newSearchInput.trim())}
-                    placeholder="New search: e.g. 'last 3 days' or 'transaction ID xyz-123'"
-                    className="flex-1 px-4 py-2 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+        <AnimatePresence>
+          {phase === "otp:waiting" && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-2xl border border-yellow-500/30 bg-yellow-500/5 backdrop-blur-sm p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <KeyRound className="w-4 h-4 text-yellow-400" />
+                <span className="text-sm font-medium text-yellow-400">Verification Code Required</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                Check your email for the one-time code sent by CommonWell and enter it below.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={otpValue}
+                  onChange={(e) => setOtpValue(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleOtpSubmit()}
+                  placeholder="Enter OTP code…"
+                  autoFocus
+                  disabled={otpSubmitting}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-yellow-500/50 focus:ring-1 focus:ring-yellow-500/20"
+                />
+                <button
+                  onClick={handleOtpSubmit}
+                  disabled={otpSubmitting || !otpValue.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-yellow-500 text-black text-sm font-medium hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {otpSubmitting ? "Submitting…" : "Submit"}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {hasError && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-2xl border border-red-500/30 bg-red-500/5 backdrop-blur-sm p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="w-4 h-4 text-red-400" />
+                <span className="text-sm font-medium text-red-400">Run failed</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">{status?.errorMessage ?? "Unknown error"}</p>
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary/50 border border-border text-sm text-foreground hover:bg-secondary transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Try Again
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {complete && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 backdrop-blur-sm p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span className="text-sm font-medium text-emerald-400">Run complete</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-4">
+                Extracted <strong className="text-foreground">{status?.recordCount.toLocaleString()}</strong> records
+                {" · "}
+                <strong className="text-red-400">{status?.errorCount.toLocaleString()}</strong> errors found
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                <a
+                  href={apiUrl("/api/cw/report")}
+                  download
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
+                >
+                  <Download className="w-4 h-4" /> Download Report
+                </a>
+                <button
+                  onClick={handleReset}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm hover:bg-secondary transition-colors"
+                >
+                  <RotateCcw className="w-4 h-4" /> New Search
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {(status?.screenshotUrls?.length ?? 0) > 0 && (
+          <div className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-4">
+            <p className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wide">Screenshots</p>
+            <div className="flex flex-wrap gap-3">
+              {status!.screenshotUrls.map((url, i) => (
+                <a key={i} href={apiUrl(url)} target="_blank" rel="noopener noreferrer">
+                  <img
+                    src={apiUrl(url)}
+                    alt={`Step ${i + 1}`}
+                    className="rounded-lg border border-border object-cover cursor-zoom-in hover:opacity-90 transition-opacity"
+                    style={{ maxWidth: 280, maxHeight: 180 }}
                   />
-                  <button
-                    onClick={() => newSearchInput.trim() && handleRunAgain(newSearchInput.trim())}
-                    disabled={!newSearchInput.trim()}
-                    className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Go
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

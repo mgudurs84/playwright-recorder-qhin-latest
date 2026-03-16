@@ -181,6 +181,9 @@ importers:
       '@workspace/integrations-openai-ai-server':
         specifier: workspace:*
         version: link:../../lib/integrations-openai-ai-server
+      ai:
+        specifier: ^6.0.116
+        version: 6.0.116(zod@3.25.76)
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
