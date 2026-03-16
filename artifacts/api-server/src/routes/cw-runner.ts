@@ -66,41 +66,94 @@ function createVertexModel() {
   return vertex(process.env.VERTEX_MODEL_ID || "gemini-2.5-flash");
 }
 
+function buildStats(records: CwTransactionRecord[]) {
+  const statusCounts: Record<string, number> = {};
+  const typeCounts: Record<string, number> = {};
+  const orgCounts: Record<string, number> = {};
+  let earliest = "";
+  let latest = "";
+
+  for (const r of records) {
+    const s = r.status ?? r.Status ?? "Unknown";
+    statusCounts[s] = (statusCounts[s] ?? 0) + 1;
+
+    const t = r.transaction_type ?? r["Transaction Type"] ?? r.transactionType ?? "Unknown";
+    typeCounts[t] = (typeCounts[t] ?? 0) + 1;
+
+    const org = r.initiating_org_name ?? r["Initiating Org Name"] ?? r.initiatingOrgName ?? "Unknown";
+    orgCounts[org] = (orgCounts[org] ?? 0) + 1;
+
+    const ts = r.timestamp ?? r.Timestamp ?? "";
+    if (ts) {
+      if (!earliest || ts < earliest) earliest = ts;
+      if (!latest || ts > latest) latest = ts;
+    }
+  }
+
+  const topN = (map: Record<string, number>, n = 10) =>
+    Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join("\n");
+
+  return { statusCounts, typeCounts, orgCounts, earliest, latest, topN };
+}
+
 async function generateReport(records: CwTransactionRecord[]): Promise<string> {
   const model = createVertexModel();
 
-  const errorRecords = records.filter(
-    (r) =>
-      r.status?.toLowerCase().includes("error") ||
-      r.status?.toLowerCase().includes("fail")
-  );
+  const isError = (r: CwTransactionRecord) => {
+    const s = (r.status ?? r.Status ?? "").toLowerCase();
+    return s.includes("error") || s.includes("fail");
+  };
 
-  const sampleSize = Math.min(records.length, 600);
-  const sample = records.slice(0, sampleSize);
+  const errorRecords = records.filter(isError);
+
+  // Build compact aggregate stats — send these instead of raw JSON blobs
+  const { topN, earliest, latest } = buildStats(records);
+  const { topN: errTopN } = buildStats(errorRecords);
+  const allStats = buildStats(records);
+
+  // Only include up to 80 error records verbatim (to keep prompt small)
+  const errorSample = errorRecords.slice(0, 80);
+
+  const prompt = `You are a CommonWell Health Alliance transaction analyst. Generate a comprehensive markdown error analysis report.
+
+## Dataset Summary
+- Total records extracted: ${records.length}
+- Error/failure records: ${errorRecords.length} (${((errorRecords.length / records.length) * 100).toFixed(1)}% error rate)
+- Date range: ${earliest || "N/A"} → ${latest || "N/A"}
+
+## Status Distribution (all records)
+${topN(allStats.statusCounts, 15)}
+
+## Transaction Type Distribution (all records)
+${topN(allStats.typeCounts, 15)}
+
+## Top Initiating Organizations (all records)
+${topN(allStats.orgCounts, 15)}
+
+## Error Record Status Distribution
+${errTopN(buildStats(errorRecords).statusCounts, 10)}
+
+## Error Records Sample (${errorSample.length} of ${errorRecords.length} shown)
+${JSON.stringify(errorSample, null, 2)}
+
+---
+
+Generate a well-structured markdown report with these sections:
+1. **Executive Summary** — total transactions, error rate, date range covered
+2. **Error Breakdown** — errors grouped by status/type with counts and percentages, using tables
+3. **Affected Organizations** — which orgs have the most errors (table with org name, error count, error rate)
+4. **Transaction Type Analysis** — which transaction types fail most (table)
+5. **Top Issues and Recommendations** — actionable next steps based on the specific errors seen
+
+Use markdown tables wherever appropriate. Be specific and data-driven.`;
 
   const { text } = await generateText({
     model,
-    prompt: `You are a CommonWell Health Alliance transaction analyst.
-
-Analyze the following transaction records and generate a comprehensive markdown error analysis report.
-
-Summary stats:
-- Total records: ${records.length}
-- Error/failure records: ${errorRecords.length}
-- Sample shown: first ${sampleSize} of ${records.length}
-
-Transaction records (JSON):
-${JSON.stringify(sample, null, 2)}
-
-Generate a well-structured markdown report with:
-1. **Executive Summary** — total transactions, error rate, date range covered
-2. **Error Breakdown** — errors grouped by status/type with counts
-3. **Affected Organizations** — which orgs have the most errors
-4. **Transaction Type Analysis** — which transaction types fail most
-5. **Timeline** — errors distribution over time (if timestamps available)
-6. **Top Issues and Recommendations** — actionable next steps
-
-Use tables where useful. Be specific and data-driven.`,
+    prompt,
     maxTokens: 8192,
   });
 
