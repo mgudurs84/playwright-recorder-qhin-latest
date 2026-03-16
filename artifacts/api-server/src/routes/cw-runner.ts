@@ -23,6 +23,7 @@ interface RunnerState {
   daysBack: number;
   transactionId: string | null;
   searchMode: "date" | "transaction_id";
+  maxRecords: number;
   recordCount: number;
   errorCount: number;
   errorMessage: string | null;
@@ -35,6 +36,7 @@ let state: RunnerState = {
   daysBack: 7,
   transactionId: null,
   searchMode: "date",
+  maxRecords: 0,
   recordCount: 0,
   errorCount: 0,
   errorMessage: null,
@@ -160,7 +162,7 @@ Use markdown tables wherever appropriate. Be specific and data-driven.`;
   return text;
 }
 
-async function runPipeline(daysBack: number, transactionId: string | null) {
+async function runPipeline(daysBack: number, transactionId: string | null, maxRecords: number) {
   const pw = getPlaywrightService();
   const username = process.env.CW_USERNAME;
   const password = process.env.CW_PASSWORD;
@@ -203,8 +205,8 @@ async function runPipeline(daysBack: number, transactionId: string | null) {
     if (filterShot) state.screenshotUrls.push(filterShot);
 
     state.phase = "extracting";
-    console.log("[CW Runner] Extracting transactions...");
-    const { records, screenshotUrl: extractShot } = await pw.extractTransactions(0);
+    console.log(`[CW Runner] Extracting transactions (maxRecords=${maxRecords || "unlimited"})...`);
+    const { records, screenshotUrl: extractShot } = await pw.extractTransactions(maxRecords);
     if (extractShot) state.screenshotUrls.push(extractShot);
 
     state.recordCount = records.length;
@@ -243,6 +245,7 @@ function resetState(): void {
     daysBack: 7,
     transactionId: null,
     searchMode: "date",
+    maxRecords: 0,
     recordCount: 0,
     errorCount: 0,
     errorMessage: null,
@@ -258,9 +261,10 @@ export function registerCwRunnerRoutes(app: Express) {
       return res.status(409).json({ error: "A run is already in progress", phase: state.phase });
     }
 
-    const { daysBack = 7, transactionId = null } = req.body as {
+    const { daysBack = 7, transactionId = null, maxRecords = 0 } = req.body as {
       daysBack?: number;
       transactionId?: string | null;
+      maxRecords?: number;
     };
 
     if (otpRejecter) otpRejecter(new Error("Cancelled by new run"));
@@ -271,10 +275,11 @@ export function registerCwRunnerRoutes(app: Express) {
     state.daysBack = Number(daysBack) || 7;
     state.transactionId = transactionId || null;
     state.searchMode = transactionId ? "transaction_id" : "date";
+    state.maxRecords = Number(maxRecords) || 0;
 
-    runPipeline(state.daysBack, state.transactionId).catch(console.error);
+    runPipeline(state.daysBack, state.transactionId, state.maxRecords).catch(console.error);
 
-    res.json({ started: true, daysBack: state.daysBack, transactionId: state.transactionId });
+    res.json({ started: true, daysBack: state.daysBack, transactionId: state.transactionId, maxRecords: state.maxRecords });
   });
 
   app.post("/api/cw/otp", (req, res) => {

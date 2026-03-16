@@ -94,12 +94,25 @@ export default function Home() {
     const q = (query ?? searchInput).trim();
     let daysBack = 7;
     let transactionId: string | null = null;
+    let maxRecords = 0;
 
     if (q) {
-      const dayMatch = q.match(/(\d+)\s*day/i);
-      if (dayMatch) {
+      // "last 20 transactions" / "20 transactions" / "last 20 records"
+      const countMatch = q.match(/(?:last\s+)?(\d+)\s*(?:transaction|record|result|row)s?/i);
+      // "last 20" (with "last" keyword but no "day")
+      const lastNMatch = !countMatch && q.match(/^last\s+(\d+)$/i);
+      // "7 days" / "last 7 days" / "7d"
+      const dayMatch = !countMatch && !lastNMatch && q.match(/(?:last\s+)?(\d+)\s*d(?:ay)?s?/i);
+      // bare number — treat as days
+      const bareNum = !countMatch && !lastNMatch && !dayMatch && /^\d+$/.test(q);
+
+      if (countMatch) {
+        maxRecords = parseInt(countMatch[1], 10);
+      } else if (lastNMatch) {
+        maxRecords = parseInt(lastNMatch[1], 10);
+      } else if (dayMatch) {
         daysBack = parseInt(dayMatch[1], 10);
-      } else if (/^\d+$/.test(q)) {
+      } else if (bareNum) {
         daysBack = parseInt(q, 10);
       } else {
         transactionId = q;
@@ -110,7 +123,7 @@ export default function Home() {
       const res = await fetch(apiUrl("/api/cw/run"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ daysBack, transactionId }),
+        body: JSON.stringify({ daysBack, transactionId, maxRecords }),
       });
       const data = await res.json() as { started?: boolean; error?: string; phase?: string };
       if (!res.ok) {
@@ -203,7 +216,7 @@ export default function Home() {
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleStart()}
-                  placeholder="e.g. 'last 7 days', '3 days', or a transaction ID"
+                  placeholder="e.g. 'last 7 days', 'last 20 transactions', or a transaction ID"
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 />
               </div>
