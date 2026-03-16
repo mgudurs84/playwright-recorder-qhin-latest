@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { KeyRound, RotateCcw, Download, Loader2, Play, Search, AlertCircle, CheckCircle2 } from "lucide-react";
+import { KeyRound, RotateCcw, Download, Loader2, Play, Search, AlertCircle, CheckCircle2, Square } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
 
@@ -144,6 +144,10 @@ export default function Home() {
     }
   }, [otpValue]);
 
+  const handleCancel = useCallback(async () => {
+    await fetch(apiUrl("/api/cw/cancel"), { method: "POST" }).catch(() => {});
+  }, []);
+
   const handleReset = useCallback(async () => {
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     await fetch(apiUrl("/api/cw/reset"), { method: "POST" }).catch(() => {});
@@ -205,9 +209,15 @@ export default function Home() {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               className="rounded-2xl border border-border bg-card/30 backdrop-blur-sm p-5 flex items-center gap-3">
               <Loader2 className="w-5 h-5 text-primary animate-spin shrink-0" />
-              <span className="text-sm text-foreground/80">
+              <span className="flex-1 text-sm text-foreground/80">
                 {phaseLabel(phase, status?.liveExtractionPage ?? 0, status?.liveExtractionCount ?? 0)}
               </span>
+              <button
+                onClick={handleCancel}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-colors"
+              >
+                <Square className="w-3 h-3 fill-current" /> Stop
+              </button>
             </motion.div>
           )}
         </AnimatePresence>
@@ -240,6 +250,12 @@ export default function Home() {
                   className="px-5 py-2.5 rounded-xl bg-yellow-500 text-black text-sm font-medium hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {otpSubmitting ? "Submitting…" : "Submit"}
+                </button>
+                <button
+                  onClick={handleCancel}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/20 transition-colors"
+                >
+                  <Square className="w-3 h-3 fill-current" /> Cancel
                 </button>
               </div>
             </motion.div>

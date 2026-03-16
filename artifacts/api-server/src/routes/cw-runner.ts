@@ -46,6 +46,11 @@ let state: RunnerState = {
 
 let otpResolver: ((otp: string) => void) | null = null;
 let otpRejecter: ((err: Error) => void) | null = null;
+let cancelFlag = false;
+
+function checkCancelled() {
+  if (cancelFlag) throw new Error("Cancelled by user");
+}
 
 function waitForOtp(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -179,20 +184,27 @@ async function runPipeline(daysBack: number, transactionId: string | null, maxRe
     const { needsOtp, screenshotUrl } = await pw.login(username, password);
     if (screenshotUrl) state.screenshotUrls = [screenshotUrl];
 
+    checkCancelled();
+
     if (needsOtp) {
       state.phase = "otp:waiting";
       console.log("[CW Runner] Waiting for OTP from user...");
       const otp = await waitForOtp();
+      checkCancelled();
       console.log("[CW Runner] OTP received, submitting...");
       const { success, screenshotUrl: otpShot } = await pw.submitOtp(otp);
       if (otpShot) state.screenshotUrls.push(otpShot);
       if (!success) throw new Error("OTP submission failed — check the code and try again");
     }
 
+    checkCancelled();
+
     state.phase = "navigating";
     console.log("[CW Runner] Navigating to transaction logs...");
     const navShot = await pw.navigateToTransactionLogs();
     if (navShot) state.screenshotUrls.push(navShot);
+
+    checkCancelled();
 
     let filterShot: string;
     if (transactionId) {
@@ -204,10 +216,14 @@ async function runPipeline(daysBack: number, transactionId: string | null, maxRe
     }
     if (filterShot) state.screenshotUrls.push(filterShot);
 
+    checkCancelled();
+
     state.phase = "extracting";
     console.log(`[CW Runner] Extracting transactions (maxRecords=${maxRecords || "unlimited"})...`);
     const { records, screenshotUrl: extractShot } = await pw.extractTransactions(maxRecords);
     if (extractShot) state.screenshotUrls.push(extractShot);
+
+    checkCancelled();
 
     state.recordCount = records.length;
     state.errorCount = records.filter(
@@ -240,6 +256,7 @@ async function runPipeline(daysBack: number, transactionId: string | null, maxRe
 }
 
 function resetState(): void {
+  cancelFlag = false;
   state = {
     phase: "idle",
     daysBack: 7,
@@ -304,6 +321,19 @@ export function registerCwRunnerRoutes(app: Express) {
       liveExtractionPage: pw.liveExtractionPage,
       liveExtractionCount: pw.liveExtractionCount,
     });
+  });
+
+  app.post("/api/cw/cancel", async (_req, res) => {
+    const running = state.phase !== "idle" && state.phase !== "complete" && state.phase !== "error";
+    if (!running) {
+      return res.status(400).json({ error: "No run in progress" });
+    }
+    cancelFlag = true;
+    if (otpRejecter) otpRejecter(new Error("Cancelled by user"));
+    state.phase = "error";
+    state.errorMessage = "Cancelled by user";
+    console.log("[CW Runner] Run cancelled by user");
+    res.json({ cancelled: true });
   });
 
   app.post("/api/cw/reset", async (_req, res) => {
