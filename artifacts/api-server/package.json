@@ -13,6 +13,7 @@
     "@workspace/api-zod": "workspace:*",
     "ai": "^6.0.116",
     "cors": "^2",
+    "dotenv": "^16.5.0",
     "express": "^5",
     "playwright": "^1.58.2",
     "zod": "catalog:"
