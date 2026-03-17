@@ -11,10 +11,8 @@
   "dependencies": {
     "@ai-sdk/google-vertex": "^4.0.80",
     "@workspace/api-zod": "workspace:*",
-    "@workspace/db": "workspace:*",
     "ai": "^6.0.116",
     "cors": "^2",
-    "drizzle-orm": "catalog:",
     "express": "^5",
     "playwright": "^1.58.2",
     "zod": "catalog:"

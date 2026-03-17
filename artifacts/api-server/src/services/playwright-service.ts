@@ -1,19 +1,20 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { db, cwSessions } from "@workspace/db";
-import type { CwTransactionRecord } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import { mkdirSync, existsSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
+import os from "os";
 
-const SCREENSHOTS_DIR = "/tmp/cw-screenshots";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type CwTransactionRecord = Record<string, any>;
+
+const SCREENSHOTS_DIR = path.join(os.tmpdir(), "cw-screenshots");
+const SESSION_DIR = path.join(os.tmpdir(), "cw-sessions");
 const PORTAL_URL = "https://integration.commonwellalliance.lkopera.com/";
 const DEFAULT_TIMEOUT = 60000;
 const ESCALATED_TIMEOUT = 120000;
 const SESSION_MAX_AGE_HOURS = parseInt(process.env.SESSION_MAX_AGE_HOURS || "24", 10);
 
-if (!existsSync(SCREENSHOTS_DIR)) {
-  mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-}
+if (!existsSync(SCREENSHOTS_DIR)) mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true });
 
 interface RetryOptions {
   maxAttempts?: number;
@@ -263,33 +264,22 @@ export class PlaywrightService {
     const storageState = await this.context.storageState();
     const sessionData: SessionData = { cookies, storageState };
     const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 60 * 60 * 1000);
-    const id = `session-${username}`;
-
-    const existing = await db.select().from(cwSessions).where(eq(cwSessions.id, id)).limit(1);
-    if (existing.length > 0) {
-      await db
-        .update(cwSessions)
-        .set({ sessionData, savedAt: new Date(), expiresAt })
-        .where(eq(cwSessions.id, id));
-    } else {
-      await db.insert(cwSessions).values({ id, username, sessionData, expiresAt });
-    }
+    const file = path.join(SESSION_DIR, `session-${username.replace(/[^a-z0-9]/gi, "_")}.json`);
+    writeFileSync(file, JSON.stringify({ sessionData, expiresAt: expiresAt.toISOString() }), "utf8");
     console.log(`[PlaywrightService] Session saved for ${username}, expires: ${expiresAt.toISOString()}`);
   }
 
   async loadSessionFromDb(username: string): Promise<boolean> {
-    const id = `session-${username}`;
-    const rows = await db.select().from(cwSessions).where(eq(cwSessions.id, id)).limit(1);
-    if (rows.length === 0) return false;
-
-    const session = rows[0];
-    if (new Date() > session.expiresAt) {
-      console.log(`[PlaywrightService] Session for ${username} expired`);
-      return false;
-    }
+    const file = path.join(SESSION_DIR, `session-${username.replace(/[^a-z0-9]/gi, "_")}.json`);
+    if (!existsSync(file)) return false;
 
     try {
-      const data = session.sessionData as SessionData;
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      if (new Date() > new Date(raw.expiresAt)) {
+        console.log(`[PlaywrightService] Session for ${username} expired`);
+        return false;
+      }
+      const data = raw.sessionData as SessionData;
       const browser = await this.ensureBrowser();
       this.context = await browser.newContext({
         storageState: data.storageState,
