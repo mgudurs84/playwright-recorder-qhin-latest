@@ -456,24 +456,103 @@ export class PlaywrightService {
       const formatDate = (d: Date) =>
         `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
 
-      const startInput = page.locator(
-        'input[name="startDate"], input[placeholder*="start"], input[aria-label*="start"], input[name="fromDate"]'
-      );
-      const endInput = page.locator(
-        'input[name="endDate"], input[placeholder*="end"], input[aria-label*="end"], input[name="toDate"]'
-      );
+      const startStr = formatDate(startDate);
+      const endStr = formatDate(endDate);
 
-      if ((await startInput.count()) > 0 && (await endInput.count()) > 0) {
-        await startInput.first().fill(formatDate(startDate));
-        await endInput.first().fill(formatDate(endDate));
+      // Diagnostic: log all input fields on the page so we can debug selector mismatches
+      const allInputs = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("input")).map(el => ({
+          id: el.id, name: el.name, type: el.type,
+          placeholder: el.placeholder, className: el.className,
+          dataRole: el.getAttribute("data-role"),
+          visible: (el as HTMLElement).offsetParent !== null,
+        }))
+      );
+      console.log("[PlaywrightService] Inputs on page:", JSON.stringify(allInputs));
 
-        const searchBtn = page.locator(
-          'button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"]'
-        );
-        if ((await searchBtn.count()) > 0) {
-          await searchBtn.first().click();
+      // Strategy 1: Kendo DatePicker via jQuery/Kendo API
+      const kendoSet = await page.evaluate(({ s, e }: { s: string; e: string }) => {
+        type Win = Window & { jQuery?: (sel: string) => { length: number; eq(i: number): { data(k: string): { value(v: string): void; trigger(t: string): void } | undefined }; } };
+        const $ = (window as Win).jQuery;
+        if (!$) return false;
+        const pickers = $("[data-role='datepicker']");
+        console.log("[KendoPicker] Found", pickers.length, "Kendo date pickers");
+        if (pickers.length >= 2) {
+          try {
+            pickers.eq(0).data("kendoDatePicker")?.value(s);
+            pickers.eq(0).data("kendoDatePicker")?.trigger("change");
+            pickers.eq(1).data("kendoDatePicker")?.value(e);
+            pickers.eq(1).data("kendoDatePicker")?.trigger("change");
+            return true;
+          } catch { return false; }
         }
+        return false;
+      }, { s: startStr, e: endStr });
+
+      if (kendoSet) {
+        console.log(`[PlaywrightService] Set dates via Kendo API: ${startStr} → ${endStr}`);
+      } else {
+        // Strategy 2: Try broad input selectors (plain HTML or non-Kendo)
+        const startSelectors = [
+          'input[name="StartDate"]', 'input[name="startDate"]', 'input[name="FromDate"]',
+          'input[name="fromDate"]', 'input[id*="StartDate" i]', 'input[id*="FromDate" i]',
+          'input[id*="start" i]', 'input[id*="from" i]',
+          'input[placeholder*="start" i]', 'input[aria-label*="start" i]',
+          '.k-datepicker:first-of-type input', '[data-role="datepicker"]:first-of-type',
+        ];
+        const endSelectors = [
+          'input[name="EndDate"]', 'input[name="endDate"]', 'input[name="ToDate"]',
+          'input[name="toDate"]', 'input[id*="EndDate" i]', 'input[id*="ToDate" i]',
+          'input[id*="end" i]', 'input[id*="to" i]',
+          'input[placeholder*="end" i]', 'input[aria-label*="end" i]',
+          '.k-datepicker:last-of-type input', '[data-role="datepicker"]:last-of-type',
+        ];
+
+        let startFilled = false;
+        let endFilled = false;
+
+        for (const sel of startSelectors) {
+          const el = page.locator(sel);
+          if ((await el.count()) > 0) {
+            console.log(`[PlaywrightService] Start date input found via: ${sel}`);
+            await el.first().click({ clickCount: 3 });
+            await el.first().fill(startStr);
+            await el.first().press("Tab");
+            startFilled = true;
+            break;
+          }
+        }
+
+        for (const sel of endSelectors) {
+          const el = page.locator(sel);
+          if ((await el.count()) > 0) {
+            console.log(`[PlaywrightService] End date input found via: ${sel}`);
+            await el.first().click({ clickCount: 3 });
+            await el.first().fill(endStr);
+            await el.first().press("Tab");
+            endFilled = true;
+            break;
+          }
+        }
+
+        if (!startFilled || !endFilled) {
+          console.warn(`[PlaywrightService] Date inputs not found — startFilled=${startFilled}, endFilled=${endFilled}. Check diagnostics above.`);
+        } else {
+          console.log(`[PlaywrightService] Set dates via HTML inputs: ${startStr} → ${endStr}`);
+        }
+      }
+
+      await page.waitForTimeout(500);
+
+      const searchBtn = page.locator(
+        'button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"][value*="Search" i]'
+      );
+      if ((await searchBtn.count()) > 0) {
+        console.log("[PlaywrightService] Clicking search button...");
+        await searchBtn.first().click();
         await page.waitForTimeout(3000);
+      } else {
+        console.warn("[PlaywrightService] No search button found after setting dates");
       }
 
       return await takeScreenshotAsync(page, "date-filter-applied");
