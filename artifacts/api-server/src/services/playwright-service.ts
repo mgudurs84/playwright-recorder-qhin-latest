@@ -148,6 +148,7 @@ export class PlaywrightService {
   private lastCheckpointUrl: string | null = null;
 
   private crashDetected = false;
+  private intentionalClose = false;
 
   async ensureBrowser(): Promise<Browser> {
     if (this.browser && this.browser.isConnected()) {
@@ -159,6 +160,10 @@ export class PlaywrightService {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
     this.browser.on("disconnected", () => {
+      if (this.intentionalClose) {
+        // Deliberate close — not a crash, ignore
+        return;
+      }
       console.warn("[PlaywrightService] Browser disconnected unexpectedly");
       this.crashDetected = true;
       this.browser = null;
@@ -749,6 +754,7 @@ export class PlaywrightService {
   }
 
   async close(): Promise<void> {
+    this.intentionalClose = true;
     try {
       if (this.page && !this.page.isClosed()) await this.page.close();
       if (this.context) await this.context.close();
@@ -758,6 +764,11 @@ export class PlaywrightService {
       this.page = null;
       this.context = null;
       this.browser = null;
+      this.crashDetected = false;
+      this.intentionalClose = false;
+      this.lastCheckpoint = null;
+      this.lastCheckpointUrl = null;
+      this.currentPhase = "idle";
     }
     console.log("[PlaywrightService] Browser closed");
   }
