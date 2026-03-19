@@ -236,16 +236,21 @@ async function runPipeline(daysBack: number, transactionId: string | null, maxRe
 
     state.phase = "reporting";
     console.log("[CW Runner] Generating report with LLM...");
-    const report = await generateReport(records);
-
-    if (!fs.existsSync(REPORT_DIR)) fs.mkdirSync(REPORT_DIR, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(REPORT_DIR, `cw-report-${ts}.md`);
-    fs.writeFileSync(file, report, "utf8");
-    state.reportFile = file;
+    try {
+      const report = await generateReport(records);
+      if (!fs.existsSync(REPORT_DIR)) fs.mkdirSync(REPORT_DIR, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const file = path.join(REPORT_DIR, `cw-report-${ts}.md`);
+      fs.writeFileSync(file, report, "utf8");
+      state.reportFile = file;
+      console.log(`[CW Runner] Report saved: ${file}`);
+    } catch (reportErr) {
+      console.warn("[CW Runner] Report generation failed (skipped):", (reportErr as Error).message);
+      state.reportFile = null;
+    }
 
     state.phase = "complete";
-    console.log(`[CW Runner] Complete. Report saved: ${file}`);
+    console.log(`[CW Runner] Complete. ${records.length} records extracted, report ${state.reportFile ? "saved" : "skipped"}.`);
   } catch (err) {
     state.phase = "error";
     state.errorMessage = (err as Error).message;

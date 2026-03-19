@@ -295,13 +295,20 @@ export default function Home() {
                 <strong className="text-red-400">{status?.errorCount.toLocaleString()}</strong> errors found
               </p>
               <div className="flex gap-2 flex-wrap">
-                <a
-                  href={apiUrl("/api/cw/report")}
-                  download
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
-                >
-                  <Download className="w-4 h-4" /> Download Report
-                </a>
+                {status?.reportFile && (
+                  <a
+                    href={apiUrl("/api/cw/report")}
+                    download
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
+                  >
+                    <Download className="w-4 h-4" /> Download Report
+                  </a>
+                )}
+                {!status?.reportFile && (
+                  <span className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-secondary/30 border border-border text-muted-foreground text-sm">
+                    <AlertCircle className="w-4 h-4" /> Report unavailable (AI credentials not configured)
+                  </span>
+                )}
                 <button
                   onClick={handleReset}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-secondary/50 border border-border text-foreground text-sm hover:bg-secondary transition-colors"
