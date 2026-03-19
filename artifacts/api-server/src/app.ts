@@ -1,5 +1,7 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import os from "os";
+import path from "path";
 import router from "./routes";
 import { registerCwRunnerRoutes } from "./routes/cw-runner";
 
@@ -9,7 +11,9 @@ app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders:
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-app.use("/api/screenshots", express.static("/tmp/cw-screenshots", {
+const SCREENSHOTS_DIR = path.join(os.tmpdir(), "cw-screenshots");
+
+app.use("/api/screenshots", express.static(SCREENSHOTS_DIR, {
   maxAge: "1d",
   setHeaders: (res) => {
     const devDomain = process.env.REPLIT_DEV_DOMAIN;

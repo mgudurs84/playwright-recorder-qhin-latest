@@ -1,5 +1,6 @@
 import { Express } from "express";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { generateText } from "ai";
@@ -59,7 +60,7 @@ function waitForOtp(): Promise<string> {
   });
 }
 
-const REPORT_DIR = "/tmp/cw-reports";
+const REPORT_DIR = path.join(os.tmpdir(), "cw-reports");
 
 function createVertexModel() {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
