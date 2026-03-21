@@ -10,6 +10,7 @@ const PORTAL_URL = "https://integration.commonwellalliance.lkopera.com/";
 if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
 export type PARPhase = "PERCEIVE" | "ACT" | "REVIEW";
+export type DemoStatus = "idle" | "running" | "otp:waiting" | "complete" | "error";
 
 export interface PARStep {
   id: number;
@@ -21,22 +22,35 @@ export interface PARStep {
   timestamp: string;
 }
 
-export type DemoStatus = "idle" | "running" | "complete" | "error";
-
 interface DemoState {
   status: DemoStatus;
   steps: PARStep[];
   errorMessage: string | null;
 }
 
-let demoState: DemoState = {
-  status: "idle",
-  steps: [],
-  errorMessage: null,
-};
+let demoState: DemoState = { status: "idle", steps: [], errorMessage: null };
 
-// Exposed so the /live endpoint can snapshot it on demand
+// Exposed so GET /api/par-demo/live can snapshot on demand
 let activePage: Page | null = null;
+
+// OTP gate — resolved when the user submits an OTP from the UI
+let otpResolver: ((otp: string) => void) | null = null;
+let otpRejecter: ((err: Error) => void) | null = null;
+
+function waitForOtp(timeoutMs = 300000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    otpResolver = resolve;
+    otpRejecter = reject;
+    // Auto-reject after timeout so the script doesn't hang forever
+    setTimeout(() => {
+      if (otpRejecter) {
+        otpRejecter(new Error("OTP entry timed out after 5 minutes"));
+        otpResolver = null;
+        otpRejecter = null;
+      }
+    }, timeoutMs);
+  });
+}
 
 async function takeShot(page: Page, label: string): Promise<string> {
   const filename = `par-${label}-${Date.now()}.png`;
@@ -56,7 +70,7 @@ function addStep(step: Omit<PARStep, "id" | "timestamp">): void {
     timestamp: new Date().toISOString(),
   };
   demoState.steps.push(s);
-  console.log(`[PAR Demo] Step ${s.id} [${s.phase}] ${s.label}: ${s.description}`);
+  console.log(`[PAR Demo] Step ${s.id} [${s.phase}] ${s.label}`);
 }
 
 async function runParScript(): Promise<void> {
@@ -88,43 +102,40 @@ async function runParScript(): Promise<void> {
     addStep({
       phase: "PERCEIVE",
       label: "Open CommonWell Portal",
-      description: `Navigating to the CommonWell integration portal at ${PORTAL_URL} — observing initial page load`,
+      description: `Navigating to ${PORTAL_URL} — observing initial page load`,
       screenshotUrl: null,
       assertionPassed: null,
     });
     await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
-    const shot1 = await takeShot(page, "step1-portal-open");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot1;
+    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step1-portal-open");
 
-    // ── Step 2: REVIEW — verify login form is present ─────────────────────
+    // ── Step 2: REVIEW — verify login form ───────────────────────────────
     addStep({
       phase: "REVIEW",
       label: "Verify Login Form Present",
-      description: "Asserting that the portal login form is visible — checking for UserName input, Password field, and Sign In button",
+      description: "Asserting UserName input, Password field, and Sign In button are all visible",
       screenshotUrl: null,
       assertionPassed: null,
     });
     const usernameInput = page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]').first();
     const passwordInput = page.locator('#Password, input[name="Password"], input[type="password"]').first();
-    const signInBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), input[type="submit"]').first();
+    const signInBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Sign in"), input[type="submit"]').first();
     const userVisible = await usernameInput.isVisible({ timeout: 5000 }).catch(() => false);
     const passVisible = await passwordInput.isVisible({ timeout: 5000 }).catch(() => false);
     const btnVisible = await signInBtn.isVisible({ timeout: 5000 }).catch(() => false);
-    const step2Pass = userVisible && passVisible;
-    const shot2 = await takeShot(page, "step2-login-form");
-    const step2 = demoState.steps[demoState.steps.length - 1];
-    step2.screenshotUrl = shot2;
-    step2.assertionPassed = step2Pass;
-    step2.description = `UserName field: ${userVisible} · Password field: ${passVisible} · Sign In button: ${btnVisible}`;
+    const s2 = demoState.steps.at(-1)!;
+    s2.assertionPassed = userVisible && passVisible;
+    s2.description = `UserName: ${userVisible} · Password: ${passVisible} · Sign In: ${btnVisible}`;
+    s2.screenshotUrl = await takeShot(page, "step2-login-form");
 
-    // ── Step 3: ACT — fill in username ────────────────────────────────────
+    // ── Step 3: ACT — enter username ──────────────────────────────────────
     addStep({
       phase: "ACT",
       label: "Enter Username",
       description: hasCredentials
         ? `Typing username "${username.substring(0, 3)}***" into the UserName field`
-        : "No CW_USERNAME env var set — skipping credential entry (demo observation only)",
+        : "No CW_USERNAME configured — skipping",
       screenshotUrl: null,
       assertionPassed: null,
     });
@@ -132,17 +143,14 @@ async function runParScript(): Promise<void> {
       await usernameInput.click();
       await usernameInput.fill(username);
     }
-    await page.waitForTimeout(500);
-    const shot3 = await takeShot(page, "step3-username");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot3;
+    await page.waitForTimeout(400);
+    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step3-username");
 
-    // ── Step 4: ACT — fill in password ────────────────────────────────────
+    // ── Step 4: ACT — enter password ──────────────────────────────────────
     addStep({
       phase: "ACT",
       label: "Enter Password",
-      description: hasCredentials
-        ? "Typing password (masked) into the Password field"
-        : "No CW_PASSWORD env var set — skipping credential entry",
+      description: hasCredentials ? "Typing password (masked) into the Password field" : "No CW_PASSWORD configured — skipping",
       screenshotUrl: null,
       assertionPassed: null,
     });
@@ -150,36 +158,33 @@ async function runParScript(): Promise<void> {
       await passwordInput.click();
       await passwordInput.fill(password);
     }
-    await page.waitForTimeout(500);
-    const shot4 = await takeShot(page, "step4-password");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot4;
+    await page.waitForTimeout(400);
+    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step4-password");
 
-    // ── Step 5: REVIEW — assert credentials are in the form ───────────────
+    // ── Step 5: REVIEW — verify form is filled ────────────────────────────
     addStep({
       phase: "REVIEW",
       label: "Verify Credentials Entered",
-      description: "Asserting the form fields are populated before submission",
+      description: "Asserting both form fields are populated before submission",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    const userValue = userVisible ? await usernameInput.inputValue().catch(() => "") : "";
-    const passValue = passVisible ? await passwordInput.inputValue().catch(() => "") : "";
-    const step5Pass = hasCredentials ? (userValue.length > 0 && passValue.length > 0) : true;
-    const shot5 = await takeShot(page, "step5-form-filled");
-    const step5 = demoState.steps[demoState.steps.length - 1];
-    step5.screenshotUrl = shot5;
-    step5.assertionPassed = step5Pass;
-    step5.description = hasCredentials
-      ? `Username filled: ${userValue.length > 0} · Password filled: ${passValue.length > 0}`
-      : "Skipped — no credentials configured (set CW_USERNAME and CW_PASSWORD to run full demo)";
+    const userVal = userVisible ? await usernameInput.inputValue().catch(() => "") : "";
+    const passVal = passVisible ? await passwordInput.inputValue().catch(() => "") : "";
+    const s5 = demoState.steps.at(-1)!;
+    s5.assertionPassed = hasCredentials ? (userVal.length > 0 && passVal.length > 0) : true;
+    s5.description = hasCredentials
+      ? `Username filled: ${userVal.length > 0} · Password filled: ${passVal.length > 0}`
+      : "Skipped — credentials not configured";
+    s5.screenshotUrl = await takeShot(page, "step5-form-filled");
 
     // ── Step 6: ACT — click Sign In ───────────────────────────────────────
     addStep({
       phase: "ACT",
       label: "Click Sign In",
       description: hasCredentials
-        ? "Clicking the Sign In button to submit credentials to the CommonWell portal"
-        : "Skipping Sign In — no credentials available; observing login page state only",
+        ? "Submitting credentials to the CommonWell portal"
+        : "Skipping Sign In — no credentials available",
       screenshotUrl: null,
       assertionPassed: null,
     });
@@ -189,108 +194,187 @@ async function runParScript(): Promise<void> {
     } else {
       await page.waitForTimeout(1000);
     }
-    const shot6 = await takeShot(page, "step6-sign-in");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot6;
+    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step6-sign-in");
 
-    // ── Step 7: PERCEIVE — observe post-login portal state ────────────────
-    const currentUrl7 = page.url();
+    // ── Step 7: PERCEIVE — detect post-login state ────────────────────────
+    const url7 = page.url();
     const onOtpPage =
-      currentUrl7.includes("UserValidate") ||
+      url7.includes("UserValidate") ||
       (await page.$('#OTP')) !== null ||
       (await page.$('#btnSendEmail')) !== null;
-    const onPortalHome = !currentUrl7.includes("Login") && !currentUrl7.includes("login") && !onOtpPage;
+    const authenticated = !url7.includes("Login") && !url7.includes("login") && !onOtpPage;
 
     addStep({
       phase: "PERCEIVE",
       label: "Observe Post-Login State",
       description: onOtpPage
-        ? "Portal redirected to OTP verification page — multi-factor authentication required"
-        : onPortalHome
-        ? `Portal authenticated — landed on: ${currentUrl7}`
-        : `Observing login result: ${currentUrl7}`,
+        ? "Portal redirected to OTP verification — triggering email OTP send, waiting for your code"
+        : authenticated
+        ? `Authenticated — portal loaded at: ${url7}`
+        : `Login result: ${url7}`,
       screenshotUrl: null,
       assertionPassed: null,
     });
+
     if (onOtpPage) {
-      // Auto-trigger email OTP send so user can see the OTP step in the live view
-      const sendEmailBtn = page.locator('#btnSendEmail');
-      if ((await sendEmailBtn.count()) > 0) {
-        console.log("[PAR Demo] Clicking Send OTP (email)…");
-        await sendEmailBtn.click().catch(() => {});
+      // Trigger email send
+      const emailBtn = page.locator('#btnSendEmail');
+      if ((await emailBtn.count()) > 0) {
+        console.log("[PAR Demo] Clicking Send OTP via email…");
+        await emailBtn.click().catch(() => {});
         await page.waitForTimeout(2000);
       }
     }
-    const shot7 = await takeShot(page, "step7-post-login");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot7;
+    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step7-post-login");
 
-    // ── Step 8: REVIEW — assert portal state changed from login ───────────
+    // ── Step 8: REVIEW — assert progress ─────────────────────────────────
     addStep({
       phase: "REVIEW",
       label: "Assert Authentication Progress",
-      description: "Verifying the portal responded to the Sign In attempt — URL must have changed from the login page",
+      description: "Verifying the portal responded — URL must have changed from the login page",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    const currentUrl8 = page.url();
-    const urlChanged = hasCredentials ? currentUrl8 !== PORTAL_URL : true;
-    const step8Pass = hasCredentials ? (onOtpPage || onPortalHome) : true;
-    const shot8 = await takeShot(page, "step8-auth-check");
-    const step8 = demoState.steps[demoState.steps.length - 1];
-    step8.screenshotUrl = shot8;
-    step8.assertionPassed = step8Pass;
-    step8.description = hasCredentials
-      ? `URL changed: ${urlChanged} · State: ${onOtpPage ? "OTP required" : onPortalHome ? "authenticated" : "unknown"} · URL: ${currentUrl8}`
-      : "Credential-free demo — login form verified successfully, Sign In not submitted";
+    const s8 = demoState.steps.at(-1)!;
+    s8.assertionPassed = hasCredentials ? (onOtpPage || authenticated) : true;
+    s8.description = hasCredentials
+      ? `State: ${onOtpPage ? "OTP required" : authenticated ? "authenticated" : "unknown"} · URL: ${page.url()}`
+      : "Credential-free demo — login form verified successfully";
+    s8.screenshotUrl = await takeShot(page, "step8-auth-check");
 
-    // ── Step 9: PERCEIVE — navigate to Transaction Logs (if authenticated) ─
-    addStep({
-      phase: "PERCEIVE",
-      label: onPortalHome ? "Navigate to Transaction Logs" : "Capture Final Portal State",
-      description: onPortalHome
-        ? "Navigating to the Transaction Logs page to observe the CDR data grid"
-        : onOtpPage
-        ? "Pausing at OTP page — MFA step identified; pipeline would continue after OTP entry"
-        : "Capturing final observable portal state for the demo report",
-      screenshotUrl: null,
-      assertionPassed: null,
-    });
+    // ── OTP gate — pause here and wait for user to enter OTP ──────────────
+    if (onOtpPage && hasCredentials) {
+      demoState.status = "otp:waiting";
+      console.log("[PAR Demo] Waiting for user OTP input…");
 
-    if (onPortalHome) {
-      try {
-        const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
-        await page.goto(txUrl, { waitUntil: "networkidle", timeout: 30000 });
-        await page.waitForTimeout(2000);
-      } catch (navErr) {
-        console.warn("[PAR Demo] Transaction Logs navigation error:", (navErr as Error).message);
+      const userOtp = await waitForOtp();
+
+      demoState.status = "running";
+
+      // ── Step 9: ACT — type OTP ────────────────────────────────────────
+      addStep({
+        phase: "ACT",
+        label: "Enter OTP Code",
+        description: `Typing the ${userOtp.length}-digit OTP code into the verification field`,
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      const otpInput = page.locator('#OTP, input[name="OTP"], input[name="otp"]').first();
+      if ((await otpInput.count()) > 0) {
+        await otpInput.fill(userOtp);
       }
+      await page.waitForTimeout(500);
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step9-otp-filled");
+
+      // ── Step 10: ACT — submit OTP ─────────────────────────────────────
+      addStep({
+        phase: "ACT",
+        label: "Submit OTP",
+        description: "Clicking the Submit button to verify the OTP code",
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      const submitBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Submit"), button:has-text("Verify")').first();
+      if ((await submitBtn.count()) > 0) {
+        await submitBtn.click().catch(() => {});
+      }
+      await page.waitForTimeout(5000);
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step10-otp-submitted");
+
+      // ── Step 11: REVIEW — assert OTP accepted ─────────────────────────
+      addStep({
+        phase: "REVIEW",
+        label: "Assert OTP Accepted",
+        description: "Verifying the portal accepted the OTP — URL must have left the UserValidate page",
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      const urlAfterOtp = page.url();
+      const otpAccepted =
+        !urlAfterOtp.includes("UserValidate") &&
+        (await page.$('#OTP')) === null;
+      const s11 = demoState.steps.at(-1)!;
+      s11.assertionPassed = otpAccepted;
+      s11.description = `OTP accepted: ${otpAccepted} · URL: ${urlAfterOtp}`;
+      s11.screenshotUrl = await takeShot(page, "step11-otp-result");
+
+      // ── Step 12: PERCEIVE — navigate to Transaction Logs ──────────────
+      addStep({
+        phase: "PERCEIVE",
+        label: "Navigate to Transaction Logs",
+        description: "Opening the CDR Transaction Logs page to observe the data grid",
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      if (otpAccepted) {
+        try {
+          const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
+          await page.goto(txUrl, { waitUntil: "networkidle", timeout: 30000 });
+          await page.waitForTimeout(2000);
+        } catch (err) {
+          console.warn("[PAR Demo] Transaction Logs nav error:", (err as Error).message);
+        }
+      }
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step12-tx-logs");
+
+      // ── Step 13: REVIEW — verify data grid ────────────────────────────
+      addStep({
+        phase: "REVIEW",
+        label: "Verify CDR Data Grid",
+        description: "Asserting the Transaction Logs Kendo grid is present and loaded",
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      const finalUrl = page.url();
+      const onTxLogs = finalUrl.includes("TransactionLog");
+      const gridVisible = onTxLogs
+        ? await page.locator(".k-grid, table").first().isVisible({ timeout: 5000 }).catch(() => false)
+        : false;
+      const s13 = demoState.steps.at(-1)!;
+      s13.assertionPassed = onTxLogs || gridVisible;
+      s13.description = `Transaction Logs page: ${onTxLogs} · Grid visible: ${gridVisible} · URL: ${finalUrl}`;
+      s13.screenshotUrl = await takeShot(page, "step13-data-grid");
     } else {
-      await page.waitForTimeout(1500);
+      // No OTP needed (already authenticated or no creds) — navigate to tx logs
+      addStep({
+        phase: "PERCEIVE",
+        label: authenticated ? "Navigate to Transaction Logs" : "Capture Final Portal State",
+        description: authenticated
+          ? "Navigating to the CDR Transaction Logs page to observe the data grid"
+          : "Capturing final observable portal state",
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      if (authenticated) {
+        try {
+          const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
+          await page.goto(txUrl, { waitUntil: "networkidle", timeout: 30000 });
+          await page.waitForTimeout(2000);
+        } catch {}
+      } else {
+        await page.waitForTimeout(1000);
+      }
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step9-final");
+
+      addStep({
+        phase: "REVIEW",
+        label: "Verify PAR Loop Coverage",
+        description: `All observable steps completed — ${demoState.steps.length} steps captured`,
+        screenshotUrl: null,
+        assertionPassed: true,
+      });
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step10-coverage");
     }
-    const shot9 = await takeShot(page, "step9-final-state");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot9;
-
-    // ── Step 10: REVIEW — final assertion ─────────────────────────────────
-    const finalUrl = page.url();
-    const onTxLogs = finalUrl.includes("TransactionLog");
-    const gridVisible = onTxLogs
-      ? await page.locator(".k-grid, table").first().isVisible({ timeout: 5000 }).catch(() => false)
-      : false;
-
-    addStep({
-      phase: "REVIEW",
-      label: onPortalHome ? "Verify Transaction Logs Grid" : "Verify PAR Loop Completeness",
-      description: onPortalHome
-        ? `Transaction Logs page: ${onTxLogs} · Kendo/data grid visible: ${gridVisible}`
-        : `All observable PAR steps executed — ${demoState.steps.length} total steps captured with screenshots`,
-      screenshotUrl: null,
-      assertionPassed: onPortalHome ? (onTxLogs || gridVisible) : true,
-    });
-    const shot10 = await takeShot(page, "step10-review-final");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot10;
 
     demoState.status = "complete";
-    console.log("[PAR Demo] Complete — all steps done");
+    console.log("[PAR Demo] Complete");
   } catch (err) {
+    // If the script fails while OTP is waiting, clean up the promise
+    if (otpRejecter) {
+      otpRejecter(new Error("Script failed"));
+      otpResolver = null;
+      otpRejecter = null;
+    }
     demoState.status = "error";
     demoState.errorMessage = (err as Error).message;
     console.error("[PAR Demo] Error:", (err as Error).message);
@@ -304,7 +388,7 @@ async function runParScript(): Promise<void> {
 
 export function registerParDemoRoutes(app: Express): void {
   app.post("/api/par-demo/run", async (_req: Request, res: Response) => {
-    if (demoState.status === "running") {
+    if (demoState.status === "running" || demoState.status === "otp:waiting") {
       return res.status(409).json({ error: "A PAR demo is already running" });
     }
     runParScript().catch(console.error);
@@ -319,18 +403,38 @@ export function registerParDemoRoutes(app: Express): void {
     });
   });
 
+  // User submits the OTP code from the UI — resumes the paused script
+  app.post("/api/par-demo/otp", (req: Request, res: Response) => {
+    const { otp } = req.body as { otp?: string };
+    if (!otp || typeof otp !== "string" || otp.trim().length === 0) {
+      return res.status(400).json({ error: "OTP code is required" });
+    }
+    if (demoState.status !== "otp:waiting" || !otpResolver) {
+      return res.status(409).json({ error: "Not waiting for OTP" });
+    }
+    const resolver = otpResolver;
+    otpResolver = null;
+    otpRejecter = null;
+    resolver(otp.trim());
+    res.json({ submitted: true });
+  });
+
   app.post("/api/par-demo/reset", (_req: Request, res: Response) => {
-    if (demoState.status === "running") {
-      return res.status(409).json({ error: "Cannot reset while running" });
+    if (demoState.status === "running" || demoState.status === "otp:waiting") {
+      // Force-reject any pending OTP promise so the script exits
+      if (otpRejecter) {
+        otpRejecter(new Error("Reset by user"));
+        otpResolver = null;
+        otpRejecter = null;
+      }
     }
     demoState = { status: "idle", steps: [], errorMessage: null };
     res.json({ reset: true });
   });
 
-  // Live screenshot — returns current Playwright page as JPEG bytes (no disk write)
+  // Live screenshot — returns the current Playwright page as JPEG bytes
   app.get("/api/par-demo/live", async (_req: Request, res: Response) => {
     if (!activePage || activePage.isClosed()) {
-      // Return a 1x1 transparent PNG when not running
       const emptyPng = Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
         "base64"
@@ -340,7 +444,7 @@ export function registerParDemoRoutes(app: Express): void {
       return res.send(emptyPng);
     }
     try {
-      const buffer = await activePage.screenshot({ type: "jpeg", quality: 75, fullPage: false });
+      const buffer = await activePage.screenshot({ type: "jpeg", quality: 80, fullPage: false });
       res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "no-store");
       res.send(buffer);

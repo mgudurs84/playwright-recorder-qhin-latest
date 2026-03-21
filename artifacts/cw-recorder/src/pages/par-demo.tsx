@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle, Clock,
-  Monitor, Eye, Zap, Search,
+  Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
+  Clock, Monitor, Eye, Zap, Search, Mail, KeyRound,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
 
 type PARPhase = "PERCEIVE" | "ACT" | "REVIEW";
-type DemoStatus = "idle" | "running" | "complete" | "error";
+type DemoStatus = "idle" | "running" | "otp:waiting" | "complete" | "error";
 
 interface PARStep {
   id: number;
@@ -25,28 +25,10 @@ interface DemoStatusResponse {
   errorMessage: string | null;
 }
 
-const PHASE_META: Record<PARPhase, { bg: string; text: string; border: string; badge: string; icon: typeof Eye }> = {
-  PERCEIVE: {
-    bg: "bg-blue-500/10",
-    text: "text-blue-400",
-    border: "border-blue-500/30",
-    badge: "bg-blue-500/20 text-blue-300 border-blue-500/40",
-    icon: Eye,
-  },
-  ACT: {
-    bg: "bg-orange-500/10",
-    text: "text-orange-400",
-    border: "border-orange-500/30",
-    badge: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-    icon: Zap,
-  },
-  REVIEW: {
-    bg: "bg-emerald-500/10",
-    text: "text-emerald-400",
-    border: "border-emerald-500/30",
-    badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
-    icon: Search,
-  },
+const PHASE_META: Record<PARPhase, { border: string; bg: string; text: string; badge: string; icon: typeof Eye }> = {
+  PERCEIVE: { border: "border-blue-500/30", bg: "bg-blue-500/10", text: "text-blue-400", badge: "bg-blue-500/20 text-blue-300 border-blue-500/40", icon: Eye },
+  ACT:      { border: "border-orange-500/30", bg: "bg-orange-500/10", text: "text-orange-400", badge: "bg-orange-500/20 text-orange-300 border-orange-500/40", icon: Zap },
+  REVIEW:   { border: "border-emerald-500/30", bg: "bg-emerald-500/10", text: "text-emerald-400", badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", icon: Search },
 };
 
 function PhaseBadge({ phase }: { phase: PARPhase }) {
@@ -54,8 +36,7 @@ function PhaseBadge({ phase }: { phase: PARPhase }) {
   const Icon = m.icon;
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-bold tracking-wide border ${m.badge}`}>
-      <Icon className="w-3 h-3" />
-      {phase}
+      <Icon className="w-3 h-3" />{phase}
     </span>
   );
 }
@@ -64,11 +45,11 @@ function AssertionChip({ passed }: { passed: boolean | null }) {
   if (passed === null) return null;
   return passed ? (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-      <CheckCircle2 className="w-3 h-3" /> PASS
+      <CheckCircle2 className="w-3 h-3" />PASS
     </span>
   ) : (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-red-500/10 border border-red-500/30 text-red-400">
-      <XCircle className="w-3 h-3" /> FAIL
+      <XCircle className="w-3 h-3" />FAIL
     </span>
   );
 }
@@ -77,22 +58,22 @@ function StepCard({ step, index, active }: { step: PARStep; index: number; activ
   const m = PHASE_META[step.phase];
   return (
     <motion.div
-      initial={{ opacity: 0, x: -16 }}
+      initial={{ opacity: 0, x: -12 }}
       animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.25, delay: index * 0.04 }}
+      transition={{ duration: 0.22, delay: index * 0.03 }}
       className={`rounded-xl border ${m.border} ${m.bg} p-3 ${active ? "ring-1 ring-primary/40" : ""}`}
     >
       <div className="flex items-start gap-2.5">
-        <div className={`w-6 h-6 rounded-full border ${m.border} ${m.bg} flex items-center justify-center shrink-0 mt-0.5`}>
+        <div className={`w-5 h-5 rounded-full border ${m.border} ${m.bg} flex items-center justify-center shrink-0 mt-0.5`}>
           <span className={`text-xs font-bold ${m.text}`}>{step.id}</span>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
             <PhaseBadge phase={step.phase} />
             <span className="text-xs font-semibold text-foreground truncate">{step.label}</span>
             <AssertionChip passed={step.assertionPassed} />
           </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">{step.description}</p>
+          <p className="text-xs text-muted-foreground leading-snug">{step.description}</p>
           <p className="text-xs text-muted-foreground/40 mt-0.5">
             <Clock className="w-2.5 h-2.5 inline mr-0.5" />
             {new Date(step.timestamp).toLocaleTimeString()}
@@ -103,67 +84,142 @@ function StepCard({ step, index, active }: { step: PARStep; index: number; activ
   );
 }
 
-// Live browser panel — polls /api/par-demo/live every 500ms while running
-function LiveBrowserPanel({
-  status,
-  lastStepScreenshot,
-}: {
-  status: DemoStatus;
-  lastStepScreenshot: string | null;
-}) {
-  const [liveUrl, setLiveUrl] = useState<string>("");
+// OTP entry panel shown when the Playwright script is paused waiting for the code
+function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
+  const [otp, setOtp] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleSubmit = async () => {
+    if (otp.trim().length === 0) { setErr("Enter the OTP code"); return; }
+    setSubmitting(true);
+    setErr("");
+    try {
+      await onSubmit(otp.trim());
+    } catch (e) {
+      setErr((e as Error).message);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mx-2 mb-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0">
+          <Mail className="w-4 h-4 text-amber-400" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-amber-300">OTP sent to your email</p>
+          <p className="text-xs text-muted-foreground">Enter the code to continue end-to-end</p>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <KeyRound className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <input
+            ref={inputRef}
+            type="text"
+            inputMode="numeric"
+            value={otp}
+            onChange={(e) => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 8)); setErr(""); }}
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+            placeholder="Enter OTP code…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 tracking-widest font-mono"
+          />
+        </div>
+        <button
+          onClick={handleSubmit}
+          disabled={submitting || otp.length === 0}
+          className="px-4 py-2 rounded-lg bg-amber-500 text-black text-xs font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+        >
+          {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Submit OTP"}
+        </button>
+      </div>
+      {err && <p className="text-xs text-red-400 mt-1.5">{err}</p>}
+    </motion.div>
+  );
+}
+
+// Double-buffered live browser panel — no flicker
+// Two <img> elements stacked; the hidden one preloads the next frame,
+// then we swap which is visible only after onLoad fires.
+function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; lastStepScreenshot: string | null }) {
+  const running = status === "running" || status === "otp:waiting";
+
+  const [frameA, setFrameA] = useState("");
+  const [frameB, setFrameB] = useState("");
+  const [active, setActive] = useState<"A" | "B">("A");  // which frame is visible
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const running = status === "running";
+  const loadingRef = useRef<"A" | "B">("B"); // which slot is loading next
 
   useEffect(() => {
     if (running) {
-      // Bust the cache on every tick so the browser fetches fresh bytes
       intervalRef.current = setInterval(() => {
-        setLiveUrl(apiUrl(`/api/par-demo/live?t=${Date.now()}`));
-      }, 500);
+        const url = apiUrl(`/api/par-demo/live?t=${Date.now()}`);
+        // Load into the inactive slot
+        if (loadingRef.current === "A") {
+          setFrameA(url);
+        } else {
+          setFrameB(url);
+        }
+      }, 600);
     } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      // When done, show the last step screenshot if available
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
       if (lastStepScreenshot) {
-        setLiveUrl(apiUrl(lastStepScreenshot));
+        setFrameA(apiUrl(lastStepScreenshot));
+        setFrameB("");
+        setActive("A");
+        loadingRef.current = "B";
       } else if (status === "idle") {
-        setLiveUrl("");
+        setFrameA(""); setFrameB("");
       }
     }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [running, status, lastStepScreenshot]);
+
+  const onLoadA = () => {
+    if (loadingRef.current === "A") { setActive("A"); loadingRef.current = "B"; }
+  };
+  const onLoadB = () => {
+    if (loadingRef.current === "B") { setActive("B"); loadingRef.current = "A"; }
+  };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Panel header */}
+      {/* Browser chrome */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card/30 shrink-0">
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 shrink-0">
           <span className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
           <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/60" />
         </div>
-        <div className="flex-1 flex items-center gap-1.5 mx-2 bg-background/50 border border-border rounded-md px-2 py-0.5">
+        <div className="flex-1 flex items-center gap-1.5 mx-2 bg-background/50 border border-border rounded-md px-2 py-0.5 min-w-0">
           <Monitor className="w-3 h-3 text-muted-foreground shrink-0" />
-          <span className="text-xs text-muted-foreground truncate font-mono">
-            integration.commonwellalliance.lkopera.com
-          </span>
+          <span className="text-xs text-muted-foreground truncate font-mono">integration.commonwellalliance.lkopera.com</span>
         </div>
-        {running && (
-          <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            LIVE
+        {status === "running" && (
+          <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />LIVE
+          </span>
+        )}
+        {status === "otp:waiting" && (
+          <span className="flex items-center gap-1 text-xs text-amber-400 shrink-0 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />PAUSED
           </span>
         )}
       </div>
 
-      {/* Viewport */}
+      {/* Viewport — double-buffered */}
       <div className="flex-1 relative bg-zinc-950 overflow-hidden">
-        {status === "idle" && !liveUrl && (
+        {/* Placeholder when idle and no frames */}
+        {status === "idle" && !frameA && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center px-6">
             <div className="w-12 h-12 rounded-xl bg-card/50 border border-border flex items-center justify-center">
               <Monitor className="w-6 h-6 text-muted-foreground" />
@@ -171,33 +227,44 @@ function LiveBrowserPanel({
             <div>
               <p className="text-sm font-medium text-foreground mb-1">Browser Preview</p>
               <p className="text-xs text-muted-foreground">
-                Run the PAR Demo to see a live view of Playwright navigating the CommonWell portal
+                Run the PAR Demo to watch Playwright navigate the CommonWell portal live
               </p>
             </div>
           </div>
         )}
 
-        {liveUrl && (
+        {/* Frame A */}
+        {frameA && (
           <img
-            key={liveUrl}
-            src={liveUrl}
-            alt="Playwright live browser view"
-            className="w-full h-full object-contain object-top"
-            onError={() => {/* silent — next tick will retry */}}
+            src={frameA}
+            alt="Playwright live view"
+            onLoad={onLoadA}
+            className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
+            style={{ opacity: active === "A" ? 1 : 0 }}
+          />
+        )}
+        {/* Frame B */}
+        {frameB && (
+          <img
+            src={frameB}
+            alt="Playwright live view"
+            onLoad={onLoadB}
+            className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
+            style={{ opacity: active === "B" ? 1 : 0 }}
           />
         )}
 
-        {running && !liveUrl && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <Loader2 className="w-8 h-8 text-primary animate-spin" />
-          </div>
-        )}
-
-        {/* Overlay badge when live */}
-        {running && (
-          <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-emerald-500/30 rounded-lg px-2.5 py-1">
+        {/* LIVE badge overlay */}
+        {status === "running" && (
+          <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-emerald-500/30 rounded-lg px-2.5 py-1 pointer-events-none">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs text-emerald-300 font-medium">Playwright · Live</span>
+          </div>
+        )}
+        {status === "otp:waiting" && (
+          <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-amber-500/30 rounded-lg px-2.5 py-1 pointer-events-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs text-amber-300 font-medium">Waiting for OTP</span>
           </div>
         )}
       </div>
@@ -216,73 +283,45 @@ async function fetchImageAsDataUri(url: string): Promise<string | null> {
       reader.onerror = () => resolve(null);
       reader.readAsDataURL(blob);
     });
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function generateHtmlReport(steps: PARStep[]): Promise<string> {
-  const phaseColor: Record<PARPhase, string> = {
-    PERCEIVE: "#3b82f6",
-    ACT: "#f97316",
-    REVIEW: "#10b981",
-  };
-  const rowsAsync = steps.map(async (s) => {
+  const phaseColor: Record<PARPhase, string> = { PERCEIVE: "#3b82f6", ACT: "#f97316", REVIEW: "#10b981" };
+  const rows = (await Promise.all(steps.map(async (s) => {
     const color = phaseColor[s.phase];
-    const assertion =
-      s.assertionPassed === null
-        ? ""
-        : s.assertionPassed
-        ? '<span style="color:#10b981;font-weight:bold">✓ PASS</span>'
-        : '<span style="color:#ef4444;font-weight:bold">✗ FAIL</span>';
+    const assertion = s.assertionPassed === null ? "" : s.assertionPassed
+      ? '<span style="color:#10b981;font-weight:bold">✓ PASS</span>'
+      : '<span style="color:#ef4444;font-weight:bold">✗ FAIL</span>';
     let imgHtml = "";
     if (s.screenshotUrl) {
-      const dataUri = await fetchImageAsDataUri(apiUrl(s.screenshotUrl));
-      if (dataUri) {
-        imgHtml = `<div style="margin-top:10px"><img src="${dataUri}" style="max-width:800px;width:100%;border-radius:8px;border:1px solid #374151" /></div>`;
-      }
+      const uri = await fetchImageAsDataUri(apiUrl(s.screenshotUrl));
+      if (uri) imgHtml = `<div style="margin-top:10px"><img src="${uri}" style="max-width:800px;width:100%;border-radius:8px;border:1px solid #374151" /></div>`;
     }
-    return `
-      <div style="background:#111827;border:1px solid ${color}40;border-radius:12px;padding:16px;margin-bottom:12px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-          <span style="background:${color}20;color:${color};border:1px solid ${color}60;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:0.05em">${s.phase}</span>
-          <strong style="color:#f9fafb">${s.id}. ${s.label}</strong>
-          ${assertion}
-          <span style="margin-left:auto;color:#6b7280;font-size:11px">${new Date(s.timestamp).toLocaleTimeString()}</span>
-        </div>
-        <p style="color:#9ca3af;font-size:13px;margin:0">${s.description}</p>
-        ${imgHtml}
-      </div>`;
-  });
-  const rows = (await Promise.all(rowsAsync)).join("");
-  const passCount = steps.filter((s) => s.assertionPassed === true).length;
-  const failCount = steps.filter((s) => s.assertionPassed === false).length;
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>PAR Loop Demo — CommonWell CDR Observability</title>
-<style>
-  body{background:#0d1117;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;margin:0;padding:24px;max-width:960px;margin:0 auto;}
-  h1{font-size:22px;margin-bottom:4px;}
-  .meta{color:#6b7280;font-size:13px;margin-bottom:24px;}
-  .summary{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;}
-  .chip{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px 14px;font-size:13px;}
-  .chip span{font-weight:700;font-size:16px;display:block;}
-</style>
-</head>
-<body>
+    return `<div style="background:#111827;border:1px solid ${color}40;border-radius:12px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="background:${color}20;color:${color};border:1px solid ${color}60;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700">${s.phase}</span>
+        <strong style="color:#f9fafb">${s.id}. ${s.label}</strong>${assertion}
+        <span style="margin-left:auto;color:#6b7280;font-size:11px">${new Date(s.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <p style="color:#9ca3af;font-size:13px;margin:0">${s.description}</p>${imgHtml}</div>`;
+  }))).join("");
+  const pc = steps.filter((s) => s.assertionPassed === true).length;
+  const fc = steps.filter((s) => s.assertionPassed === false).length;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>PAR Loop Demo — CommonWell CDR</title>
+<style>body{background:#0d1117;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;margin:0;padding:24px;max-width:960px;margin:0 auto}
+h1{font-size:22px;margin-bottom:4px}.meta{color:#6b7280;font-size:13px;margin-bottom:24px}
+.sum{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}.chip{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px 14px;font-size:13px}
+.chip span{font-weight:700;font-size:16px;display:block}</style></head><body>
 <h1>PAR Loop Demo — CommonWell CDR Observability</h1>
-<p class="meta">Generated ${new Date().toLocaleString()} · Playwright portal visualiser · Screenshots embedded as data URIs (offline-safe)</p>
-<div class="summary">
+<p class="meta">Generated ${new Date().toLocaleString()} · Playwright portal visualiser · Screenshots embedded (offline-safe)</p>
+<div class="sum">
   <div class="chip"><span>${steps.length}</span>Total Steps</div>
   <div class="chip"><span style="color:#3b82f6">${steps.filter((s) => s.phase === "PERCEIVE").length}</span>PERCEIVE</div>
   <div class="chip"><span style="color:#f97316">${steps.filter((s) => s.phase === "ACT").length}</span>ACT</div>
   <div class="chip"><span style="color:#10b981">${steps.filter((s) => s.phase === "REVIEW").length}</span>REVIEW</div>
-  <div class="chip"><span style="color:#10b981">${passCount}/${passCount + failCount}</span>Assertions Passed</div>
-</div>
-${rows}
-</body></html>`;
+  <div class="chip"><span style="color:#10b981">${pc}/${pc + fc}</span>Assertions Passed</div>
+</div>${rows}</body></html>`;
 }
 
 export default function ParDemo() {
@@ -313,7 +352,7 @@ export default function ParDemo() {
       .then((data: DemoStatusResponse | null) => {
         if (!data || !Array.isArray(data.steps)) return;
         setDemoState(data);
-        if (data.status === "running") startPolling();
+        if (data.status === "running" || data.status === "otp:waiting") startPolling();
       })
       .catch(() => {});
     return stopPolling;
@@ -328,13 +367,13 @@ export default function ParDemo() {
       const res = await fetch(apiUrl("/api/par-demo/run"), { method: "POST" });
       if (!res.ok) {
         const err = await res.json() as { error?: string };
-        setDemoState((prev) => ({ ...prev, status: "error", errorMessage: err.error ?? "Failed to start" }));
+        setDemoState((p) => ({ ...p, status: "error", errorMessage: err.error ?? "Failed to start" }));
         return;
       }
       setDemoState({ status: "running", steps: [], errorMessage: null });
       startPolling();
     } catch (err) {
-      setDemoState((prev) => ({ ...prev, status: "error", errorMessage: (err as Error).message }));
+      setDemoState((p) => ({ ...p, status: "error", errorMessage: (err as Error).message }));
     }
   }, [startPolling]);
 
@@ -343,6 +382,19 @@ export default function ParDemo() {
     await fetch(apiUrl("/api/par-demo/reset"), { method: "POST" }).catch(() => {});
     setDemoState({ status: "idle", steps: [], errorMessage: null });
   }, [stopPolling]);
+
+  const handleOtpSubmit = useCallback(async (otp: string) => {
+    const res = await fetch(apiUrl("/api/par-demo/otp"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ otp }),
+    });
+    if (!res.ok) {
+      const err = await res.json() as { error?: string };
+      throw new Error(err.error ?? "Failed to submit OTP");
+    }
+    // Status will flip back to "running" — polling picks it up automatically
+  }, []);
 
   const handleDownload = useCallback(async () => {
     const html = await generateHtmlReport(demoState.steps);
@@ -357,9 +409,11 @@ export default function ParDemo() {
 
   const { status, steps, errorMessage } = demoState;
   const running = status === "running";
+  const otpWaiting = status === "otp:waiting";
   const complete = status === "complete";
   const hasError = status === "error";
   const idle = status === "idle";
+  const active = running || otpWaiting;
 
   const passCount = steps.filter((s) => s.assertionPassed === true).length;
   const failCount = steps.filter((s) => s.assertionPassed === false).length;
@@ -367,53 +421,51 @@ export default function ParDemo() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* ── Top bar ────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
-        <div>
-          <h1 className="text-lg font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
+
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0 gap-3">
+        <div className="shrink-0">
+          <h1 className="text-base font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
             <span className="text-primary">PAR</span> Loop Demo
           </h1>
-          <p className="text-xs text-muted-foreground">
-            CommonWell Portal · Perceive → Act → Review in real time
-          </p>
+          <p className="text-xs text-muted-foreground">CommonWell Portal · Perceive → Act → Review</p>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Phase legend */}
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {(["PERCEIVE", "ACT", "REVIEW"] as PARPhase[]).map((p) => <PhaseBadge key={p} phase={p} />)}
-          <div className="w-px h-4 bg-border mx-1" />
+          <div className="w-px h-4 bg-border mx-0.5" />
           {(idle || complete || hasError) && (
-            <button
-              onClick={handleRun}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
-            >
-              <Play className="w-3.5 h-3.5" />
-              {idle ? "Run PAR Demo" : "Run Again"}
+            <button onClick={handleRun}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
+              <Play className="w-3 h-3" />{idle ? "Run PAR Demo" : "Run Again"}
             </button>
           )}
-          {running && (
-            <button disabled className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Running…
+          {active && (
+            <button disabled
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
+              <Loader2 className="w-3 h-3 animate-spin" />{otpWaiting ? "Waiting…" : "Running…"}
             </button>
           )}
           {complete && steps.length > 0 && (
-            <button onClick={handleDownload} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
-              <Download className="w-3.5 h-3.5" /> Report
+            <button onClick={handleDownload}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
+              <Download className="w-3 h-3" />Report
             </button>
           )}
           {(complete || hasError) && (
-            <button onClick={handleReset} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
-              <RotateCcw className="w-3.5 h-3.5" /> Reset
+            <button onClick={handleReset}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
+              <RotateCcw className="w-3 h-3" />Reset
             </button>
           )}
         </div>
       </div>
 
-      {/* ── Status banners ─────────────────────────────────────────────────── */}
+      {/* ── Status banners ───────────────────────────────────────────────── */}
       <AnimatePresence>
         {hasError && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-            className="mx-4 mb-1 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-2.5">
-            <p className="text-xs font-medium text-red-400">Demo error: {errorMessage ?? "Unknown error"}</p>
+            className="mx-4 mb-1 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-2">
+            <p className="text-xs text-red-400 font-medium">Error: {errorMessage ?? "Unknown"}</p>
           </motion.div>
         )}
         {complete && (
@@ -427,49 +479,51 @@ export default function ParDemo() {
         )}
       </AnimatePresence>
 
-      {/* ── Split panel ────────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden gap-3 px-4 pb-4 pt-1">
+      {/* ── Split panel ──────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden gap-2.5 px-4 pb-4 pt-1">
 
-        {/* LEFT: Step timeline */}
+        {/* LEFT — step timeline + OTP panel */}
         <div className="w-[42%] shrink-0 flex flex-col overflow-hidden rounded-2xl border border-border bg-card/20">
-          <div className="px-3 py-2 border-b border-border shrink-0">
+          <div className="px-3 py-2 border-b border-border shrink-0 flex items-center justify-between">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              {running ? "Live Timeline" : steps.length > 0 ? "Annotated Timeline" : "Steps"}
+              {running ? "Live Timeline" : otpWaiting ? "Paused — OTP Required" : steps.length > 0 ? "Timeline" : "Steps"}
             </p>
             {steps.length > 0 && (
-              <p className="text-xs text-muted-foreground/60 mt-0.5">
-                {steps.filter((s) => s.phase === "PERCEIVE").length}P · {steps.filter((s) => s.phase === "ACT").length}A · {steps.filter((s) => s.phase === "REVIEW").length}R
+              <p className="text-xs text-muted-foreground/60">
+                {steps.filter((s) => s.phase === "PERCEIVE").length}P ·{" "}
+                {steps.filter((s) => s.phase === "ACT").length}A ·{" "}
+                {steps.filter((s) => s.phase === "REVIEW").length}R
               </p>
             )}
           </div>
 
+          {/* OTP entry — shown above timeline when waiting */}
+          <AnimatePresence>
+            {otpWaiting && <OtpPanel onSubmit={handleOtpSubmit} />}
+          </AnimatePresence>
+
           <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
             {idle && steps.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-center py-8 px-4">
-                <Play className="w-8 h-8 text-muted-foreground/30 mb-3" />
+                <Play className="w-7 h-7 text-muted-foreground/30 mb-3" />
                 <p className="text-xs text-muted-foreground">Click Run PAR Demo to start</p>
+                <p className="text-xs text-muted-foreground/50 mt-1">Requires CW_USERNAME and CW_PASSWORD env vars</p>
               </div>
             )}
             {steps.map((step, i) => (
-              <StepCard
-                key={step.id}
-                step={step}
-                index={i}
-                active={running && i === steps.length - 1}
-              />
+              <StepCard key={step.id} step={step} index={i} active={active && i === steps.length - 1} />
             ))}
             {running && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-card/20 text-muted-foreground text-xs">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                Running next step…
+                className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-card/20 text-xs text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />Running next step…
               </motion.div>
             )}
             <div ref={stepsEndRef} />
           </div>
         </div>
 
-        {/* RIGHT: Live browser */}
+        {/* RIGHT — live browser */}
         <div className="flex-1 overflow-hidden rounded-2xl border border-border bg-zinc-950">
           <LiveBrowserPanel status={status} lastStepScreenshot={lastScreenshot} />
         </div>
