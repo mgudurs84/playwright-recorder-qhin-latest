@@ -316,10 +316,16 @@ function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
 }
 
 // ── Date range helpers ────────────────────────────────────────────────────────
-function todayIso(): string { return new Date().toISOString().split("T")[0]; }
+// Format using local calendar date (not UTC) to avoid midnight off-by-one on non-UTC systems
+function localIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function todayIso(): string { return localIso(new Date()); }
 function daysAgoIso(days: number): string {
-  const d = new Date(); d.setDate(d.getDate() - days);
-  return d.toISOString().split("T")[0];
+  const d = new Date(); d.setDate(d.getDate() - days); return localIso(d);
 }
 function getPresetRange(preset: Exclude<DatePreset, "custom">): { dateFrom: string; dateTo: string } {
   const today = todayIso();
@@ -746,6 +752,10 @@ export default function ParDemo() {
       .then((data: DemoStatusResponse | null) => {
         if (!data || !Array.isArray(data.steps)) return;
         setDemoState(data);
+        // Re-hydrate UI date range from the server's last-used range if available
+        if (data.dateRange?.dateFrom && data.dateRange?.dateTo) {
+          setDateRange({ preset: "custom", dateFrom: data.dateRange.dateFrom, dateTo: data.dateRange.dateTo });
+        }
         if (data.status === "running" || data.status === "otp:waiting") startPolling();
       }).catch(() => {});
     return stopPolling;
