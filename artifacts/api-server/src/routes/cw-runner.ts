@@ -65,7 +65,12 @@ const REPORT_DIR = path.join(os.tmpdir(), "cw-reports");
 function createVertexModel() {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
   if (!serviceAccountJson) throw new Error("GCP_SERVICE_ACCOUNT_JSON not set");
-  const serviceAccount = JSON.parse(serviceAccountJson) as { project_id: string };
+  const serviceAccount = JSON.parse(serviceAccountJson) as { project_id: string; private_key?: string };
+  // Replit secret storage sometimes stores \n as literal backslash-n instead of real newlines.
+  // The Google auth library needs real newline characters in the PEM key to sign JWTs correctly.
+  if (serviceAccount.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+  }
   const vertex = createVertex({
     project: serviceAccount.project_id,
     location: "us-central1",
