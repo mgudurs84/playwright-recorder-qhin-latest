@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Layout } from "@/components/layout";
 import Home from "@/pages/home";
 import ParDemo from "@/pages/par-demo";
+import HourlyMonitor from "@/pages/hourly-monitor";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
@@ -20,6 +21,7 @@ function App() {
             <Switch>
               <Route path="/" component={Home} />
               <Route path="/par-demo" component={ParDemo} />
+              <Route path="/hourly-monitor" component={HourlyMonitor} />
               <Route component={NotFound} />
             </Switch>
           </Layout>

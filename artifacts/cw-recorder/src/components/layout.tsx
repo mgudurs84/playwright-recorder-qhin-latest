@@ -1,11 +1,12 @@
 import React from "react";
-import { Activity, Menu, X, FlaskConical } from "lucide-react";
+import { Activity, Menu, X, FlaskConical, Clock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useLocation, Link } from "wouter";
 
 const NAV_ITEMS = [
   { href: "/", label: "Recorder", icon: Activity },
   { href: "/par-demo", label: "PAR Demo", icon: FlaskConical },
+  { href: "/hourly-monitor", label: "Monitor", icon: Clock },
 ];
 
 function navClass(active: boolean) {
