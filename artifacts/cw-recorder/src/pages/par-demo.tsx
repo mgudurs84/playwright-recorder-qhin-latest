@@ -336,6 +336,9 @@ function DateRangePicker({ value, onChange }: {
   onChange: (v: DateRange) => void;
 }) {
   const presets: DatePreset[] = ["24h", "7d", "30d", "custom"];
+  const activeLabel = value.preset === "custom"
+    ? `${value.dateFrom} → ${value.dateTo}`
+    : PRESET_LABELS[value.preset];
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1 flex-wrap">
@@ -360,6 +363,11 @@ function DateRangePicker({ value, onChange }: {
             {PRESET_LABELS[p]}
           </button>
         ))}
+        {/* Active date range badge — always visible, shows current selection */}
+        <span className="ml-1 flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/8 border border-primary/20 text-primary/80">
+          <Calendar className="w-2.5 h-2.5" />
+          {activeLabel}
+        </span>
       </div>
       {value.preset === "custom" && (
         <div className="flex items-center gap-1.5">
@@ -387,187 +395,133 @@ function DateRangePicker({ value, onChange }: {
 }
 
 // ── PDF report generator ──────────────────────────────────────────────────────
-const PHASE_COLORS_RGB: Record<PARPhase, [number, number, number]> = {
-  PERCEIVE: [59, 130, 246],
-  ACT:      [249, 115, 22],
-  REVIEW:   [16, 185, 129],
-};
-
+// Uses html2canvas to capture a rendered off-screen report container, then
+// jsPDF to slice it into A4 pages and attach screenshot images per step.
 async function generatePdfReport(
   steps: PARStep[],
   aiSummary: string | null,
   dateRange: DateRange | null,
 ): Promise<void> {
-  const { default: jsPDF } = await import("jspdf");
+  const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+    import("jspdf"),
+    import("html2canvas"),
+  ]);
 
-  const doc = new jsPDF({ orientation: "p", unit: "mm", format: "a4" });
-  const PW = 210; // page width mm
-  const PH = 297; // page height mm
-  const ML = 15;  // left margin
-  const MR = 15;  // right margin
-  const MT = 18;  // top margin
-  const MB = 18;  // bottom margin
-  const CW = PW - ML - MR; // content width
+  // ── 1. Build the full report HTML and embed screenshots as data URIs ───────
+  const phaseColor: Record<PARPhase, string> = { PERCEIVE: "#3b82f6", ACT: "#f97316", REVIEW: "#10b981" };
 
-  let y = MT;
-
-  const addFooters = () => {
-    // jsPDF 2.x exposes page count via internal API
-    const total: number = (doc.internal as unknown as { getNumberOfPages(): number }).getNumberOfPages?.() ?? 1;
-    for (let p = 1; p <= total; p++) {
-      doc.setPage(p);
-      doc.setFontSize(7); doc.setTextColor(160, 160, 160); doc.setFont("helvetica", "normal");
-      doc.text("PAR Loop Demo — CommonWell CDR Observability", ML, PH - 8);
-      doc.text(`Page ${p} / ${total}`, PW - MR, PH - 8, { align: "right" });
-    }
-  };
-
-  const newPage = () => { doc.addPage(); y = MT; };
-  const spaceLeft = () => PH - MB - y;
-  const ensureSpace = (needed: number) => { if (spaceLeft() < needed) newPage(); };
-
-  // ── Cover: red accent bar ─────────────────────────────────────────────────
-  doc.setFillColor(204, 0, 0);
-  doc.rect(ML, y, CW, 1.2, "F");
-  y += 5;
-
-  doc.setFont("helvetica", "bold"); doc.setFontSize(22); doc.setTextColor(204, 0, 0);
-  doc.text("PAR Loop Demo", ML, y);
-  y += 8;
-
-  doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(70, 70, 70);
-  doc.text("CommonWell CDR Observability — Server Error Analysis", ML, y);
-  y += 5.5;
-
-  doc.setFontSize(8.5); doc.setTextColor(120, 120, 120);
-  doc.text(`Generated: ${new Date().toLocaleString()}`, ML, y);
-  y += 4;
-
-  if (dateRange) {
-    const label = dateRange.preset === "custom"
+  const rangeLabel = dateRange
+    ? dateRange.preset === "custom"
       ? `${dateRange.dateFrom} → ${dateRange.dateTo}`
-      : PRESET_LABELS[dateRange.preset];
-    doc.text(`Date Range: ${label}`, ML, y);
-    y += 4;
-  }
+      : PRESET_LABELS[dateRange.preset]
+    : null;
 
-  // Separator
-  y += 3;
-  doc.setDrawColor(210, 210, 210);
-  doc.line(ML, y, PW - MR, y);
-  y += 6;
-
-  // Stat chips
   const pc = steps.filter((s) => s.assertionPassed === true).length;
   const fc = steps.filter((s) => s.assertionPassed === false).length;
-  const stats: { label: string; value: string; color: [number, number, number] }[] = [
-    { label: "Total Steps", value: `${steps.length}`,    color: [100, 116, 139] },
-    { label: "PERCEIVE",    value: `${steps.filter((s) => s.phase === "PERCEIVE").length}`, color: [59, 130, 246] },
-    { label: "ACT",         value: `${steps.filter((s) => s.phase === "ACT").length}`,      color: [249, 115, 22] },
-    { label: "REVIEW",      value: `${steps.filter((s) => s.phase === "REVIEW").length}`,   color: [16, 185, 129] },
-    { label: "Passed",      value: `${pc}/${pc + fc}`,   color: [16, 185, 129] },
-  ];
-  const chipW = (CW - (stats.length - 1) * 2) / stats.length;
-  stats.forEach(({ label, value, color }, i) => {
-    const cx = ML + i * (chipW + 2);
-    doc.setFillColor(color[0], color[1], color[2]);
-    doc.rect(cx, y, chipW, 13, "F");
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(11); doc.setFont("helvetica", "bold");
-    doc.text(value, cx + chipW / 2, y + 6, { align: "center" });
-    doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
-    doc.text(label, cx + chipW / 2, y + 10.5, { align: "center" });
-  });
-  y += 18;
 
-  // ── AI Summary ────────────────────────────────────────────────────────────
-  if (aiSummary) {
-    ensureSpace(20);
-    doc.setFillColor(15, 10, 40);
-    doc.rect(ML, y, CW, 9, "F");
-    doc.setTextColor(196, 181, 253); doc.setFontSize(9.5); doc.setFont("helvetica", "bold");
-    doc.text("Vertex AI — Server Error Analysis (Gemini 2.5 Flash)", ML + 3, y + 6);
-    y += 12;
-
-    // Strip markdown headings and bold markers; keep plain text
-    const plainSummary = aiSummary
-      .replace(/^#{1,3}\s+/gm, "")
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/`([^`]+)`/g, "$1");
-
-    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(55, 55, 65);
-    const lines = doc.splitTextToSize(plainSummary, CW - 2);
-    for (const line of lines) {
-      ensureSpace(5);
-      doc.text(line, ML + 2, y);
-      y += 4;
+  const stepRows = (await Promise.all(steps.map(async (s) => {
+    const color = phaseColor[s.phase];
+    const assertion = s.assertionPassed === null ? "" : s.assertionPassed
+      ? '<span style="color:#10b981;font-weight:bold"> ✓ PASS</span>'
+      : '<span style="color:#ef4444;font-weight:bold"> ✗ FAIL</span>';
+    let imgHtml = "";
+    if (s.screenshotUrl) {
+      const uri = await fetchImageAsDataUri(apiUrl(s.screenshotUrl));
+      if (uri) imgHtml = `<div style="margin-top:10px"><img src="${uri}" style="max-width:100%;border-radius:6px;border:1px solid #374151" /></div>`;
     }
-    y += 4;
+    return `<div style="background:#111827;border:1px solid ${color}40;border-radius:10px;padding:14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="background:${color}20;color:${color};border:1px solid ${color}60;border-radius:5px;padding:2px 7px;font-size:10px;font-weight:700">${s.phase}</span>
+        <strong style="color:#f9fafb;font-size:13px">${s.id}. ${s.label}</strong>${assertion}
+        <span style="margin-left:auto;color:#6b7280;font-size:10px">${new Date(s.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <p style="color:#9ca3af;font-size:12px;margin:0">${s.description}</p>${imgHtml}
+    </div>`;
+  }))).join("");
+
+  const aiHtml = aiSummary
+    ? `<div style="background:#1e1333;border:1px solid #7c3aed40;border-radius:10px;padding:18px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:14px">✦</span>
+          <strong style="color:#c4b5fd;font-size:13px">Vertex AI — Server Error Analysis (Gemini 2.5 Flash)</strong>
+        </div>
+        <pre style="color:#d4d4d8;font-size:11px;white-space:pre-wrap;font-family:system-ui;margin:0">${aiSummary.replace(/</g, "&lt;")}</pre>
+      </div>` : "";
+
+  const reportHtml = `
+    <div style="background:#0d1117;color:#f9fafb;font-family:system-ui,-apple-system,sans-serif;padding:28px;width:860px;box-sizing:border-box">
+      <div style="border-top:3px solid #cc0000;margin-bottom:16px"></div>
+      <h1 style="font-size:22px;margin:0 0 4px;color:#cc0000">PAR Loop Demo</h1>
+      <p style="color:#9ca3af;font-size:13px;margin:0 0 4px">CommonWell CDR Observability — Server Error Analysis</p>
+      <p style="color:#6b7280;font-size:11px;margin:0 0 2px">Generated: ${new Date().toLocaleString()}</p>
+      ${rangeLabel ? `<p style="color:#6b7280;font-size:11px;margin:0 0 14px">Date Range: ${rangeLabel}</p>` : `<div style="margin-bottom:14px"></div>`}
+      <div style="display:flex;gap:8px;margin-bottom:20px">
+        ${[
+          { label: "Total Steps", value: steps.length, color: "#64748b" },
+          { label: "PERCEIVE", value: steps.filter((s) => s.phase === "PERCEIVE").length, color: "#3b82f6" },
+          { label: "ACT", value: steps.filter((s) => s.phase === "ACT").length, color: "#f97316" },
+          { label: "REVIEW", value: steps.filter((s) => s.phase === "REVIEW").length, color: "#10b981" },
+          { label: "Passed", value: `${pc}/${pc + fc}`, color: "#10b981" },
+        ].map(({ label, value, color }) =>
+          `<div style="background:${color}22;border:1px solid ${color}55;border-radius:8px;padding:8px 14px;text-align:center;min-width:80px">
+            <div style="font-size:18px;font-weight:700;color:${color}">${value}</div>
+            <div style="font-size:10px;color:#9ca3af">${label}</div>
+          </div>`
+        ).join("")}
+      </div>
+      ${aiHtml}
+      <h2 style="font-size:16px;color:#e5e7eb;margin:0 0 14px;padding-bottom:8px;border-bottom:1px solid #374151">Execution Steps</h2>
+      ${stepRows}
+    </div>`;
+
+  // ── 2. Render HTML off-screen with html2canvas ─────────────────────────────
+  const container = document.createElement("div");
+  container.style.cssText = "position:absolute;top:-99999px;left:0;z-index:-1";
+  container.innerHTML = reportHtml;
+  document.body.appendChild(container);
+
+  let canvas: HTMLCanvasElement;
+  try {
+    canvas = await html2canvas(container.firstElementChild as HTMLElement, {
+      scale: 1.5,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: "#0d1117",
+      logging: false,
+    });
+  } finally {
+    document.body.removeChild(container);
   }
 
-  // ── Steps ─────────────────────────────────────────────────────────────────
-  ensureSpace(16);
-  doc.setDrawColor(200, 200, 200); doc.line(ML, y, PW - MR, y); y += 5;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(30, 30, 30);
-  doc.text("Execution Steps", ML, y);
-  y += 7;
+  // ── 3. Slice canvas into A4 pages with jsPDF ──────────────────────────────
+  const doc = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+  const pgW = doc.internal.pageSize.getWidth();
+  const pgH = doc.internal.pageSize.getHeight();
 
-  for (const step of steps) {
-    ensureSpace(22);
-    const [r, g, b] = PHASE_COLORS_RGB[step.phase];
+  // Scale canvas width to fit PDF page width
+  const scaleRatio = pgW / canvas.width;
+  const scaledTotalH = canvas.height * scaleRatio;
+  const numPages = Math.ceil(scaledTotalH / pgH);
 
-    // Left accent bar
-    doc.setFillColor(r, g, b); doc.rect(ML, y, 2, 11, "F");
+  for (let pg = 0; pg < numPages; pg++) {
+    if (pg > 0) doc.addPage();
 
-    // Phase tag
-    doc.setFillColor(r, g, b); doc.setTextColor(255, 255, 255);
-    doc.setFontSize(7); doc.setFont("helvetica", "bold");
-    doc.text(step.phase, ML + 4, y + 4.5);
+    // Source slice in canvas pixels
+    const srcY = Math.round((pg * pgH) / scaleRatio);
+    const srcH = Math.min(Math.round(pgH / scaleRatio), canvas.height - srcY);
 
-    // Label
-    doc.setTextColor(15, 15, 15); doc.setFontSize(9.5);
-    doc.text(`${step.id}. ${step.label}`, ML + 22, y + 4.5);
+    // Draw the slice onto a temporary canvas
+    const sliceCanvas = document.createElement("canvas");
+    sliceCanvas.width = canvas.width;
+    sliceCanvas.height = srcH;
+    const ctx = sliceCanvas.getContext("2d");
+    if (ctx) ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH);
 
-    // Assertion chip (right-aligned)
-    if (step.assertionPassed !== null) {
-      const [ar, ag, ab]: [number, number, number] = step.assertionPassed ? [16, 185, 129] : [239, 68, 68];
-      doc.setTextColor(ar, ag, ab); doc.setFontSize(7); doc.setFont("helvetica", "bold");
-      doc.text(step.assertionPassed ? "PASS" : "FAIL", PW - MR, y + 4.5, { align: "right" });
-    }
-
-    // Timestamp
-    doc.setTextColor(140, 140, 140); doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
-    doc.text(new Date(step.timestamp).toLocaleTimeString(), PW - MR, y + 9.5, { align: "right" });
-    y += 13;
-
-    // Description
-    doc.setTextColor(70, 70, 80); doc.setFontSize(8);
-    const descLines = doc.splitTextToSize(step.description, CW - 5);
-    for (const line of descLines) { ensureSpace(5); doc.text(line, ML + 4, y); y += 4; }
-    y += 2;
-
-    // Screenshot
-    if (step.screenshotUrl) {
-      const imgData = await fetchImageAsDataUri(apiUrl(step.screenshotUrl));
-      if (imgData) {
-        const imgW = Math.min(CW - 4, 130);
-        const imgH = Math.round(imgW * 9 / 16);
-        ensureSpace(imgH + 6);
-        try {
-          const fmt = imgData.startsWith("data:image/png") ? "PNG" : "JPEG";
-          doc.addImage(imgData, fmt, ML + 4, y, imgW, imgH);
-          y += imgH + 5;
-        } catch { /* skip unloadable image */ }
-      }
-    }
-
-    // Step separator
-    ensureSpace(5);
-    doc.setDrawColor(230, 230, 230); doc.line(ML, y, PW - MR, y);
-    y += 5;
+    const sliceData = sliceCanvas.toDataURL("image/jpeg", 0.88);
+    const sliceRenderedH = srcH * scaleRatio;
+    doc.addImage(sliceData, "JPEG", 0, 0, pgW, sliceRenderedH);
   }
 
-  addFooters();
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   doc.save(`par-demo-cw-${ts}.pdf`);
 }
