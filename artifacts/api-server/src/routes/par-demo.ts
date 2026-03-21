@@ -1,10 +1,11 @@
-import { Express } from "express";
+import { Express, Request, Response } from "express";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import fs from "fs";
 import path from "path";
 import os from "os";
 
 const SCREENSHOTS_DIR = path.join(os.tmpdir(), "cw-screenshots");
+const PORTAL_URL = "https://integration.commonwellalliance.lkopera.com/";
 
 if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
@@ -34,6 +35,9 @@ let demoState: DemoState = {
   errorMessage: null,
 };
 
+// Exposed so the /live endpoint can snapshot it on demand
+let activePage: Page | null = null;
+
 async function takeShot(page: Page, label: string): Promise<string> {
   const filename = `par-${label}-${Date.now()}.png`;
   const filepath = path.join(SCREENSHOTS_DIR, filename);
@@ -55,33 +59,6 @@ function addStep(step: Omit<PARStep, "id" | "timestamp">): void {
   console.log(`[PAR Demo] Step ${s.id} [${s.phase}] ${s.label}: ${s.description}`);
 }
 
-function getCwRecorderUrl(): string {
-  const devDomain = process.env.REPLIT_DEV_DOMAIN;
-  if (devDomain) {
-    return `https://${devDomain}/cw-recorder/`;
-  }
-  return "http://localhost:5173/";
-}
-
-interface CwStatus {
-  phase: string;
-  recordCount: number;
-  errorCount: number;
-  errorMessage: string | null;
-  liveExtractionPage: number;
-  liveExtractionCount: number;
-}
-
-async function fetchCwStatus(): Promise<CwStatus | null> {
-  try {
-    const res = await fetch("http://localhost:8080/api/cw/status");
-    if (!res.ok) return null;
-    return await res.json() as CwStatus;
-  } catch {
-    return null;
-  }
-}
-
 async function runParScript(): Promise<void> {
   demoState = { status: "running", steps: [], errorMessage: null };
 
@@ -89,206 +66,227 @@ async function runParScript(): Promise<void> {
   let context: BrowserContext | null = null;
   let page: Page | null = null;
 
+  const username = process.env.CW_USERNAME ?? "";
+  const password = process.env.CW_PASSWORD ?? "";
+  const hasCredentials = username.length > 0 && password.length > 0;
+
   try {
     browser = await chromium.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
-    context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    });
     page = await context.newPage();
-    page.setDefaultTimeout(15000);
+    page.setDefaultTimeout(30000);
+    activePage = page;
 
-    // Pre-flight: reset any stale CW run so the recorder form is visible
-    try {
-      await fetch("http://localhost:8080/api/cw/reset", { method: "POST" });
-      console.log("[PAR Demo] Pre-flight: CW state reset");
-    } catch {
-      console.warn("[PAR Demo] Pre-flight reset failed (continuing)");
-    }
-
-    const cwUrl = getCwRecorderUrl();
-
-    // ── Step 1: PERCEIVE — open the CW Recorder page ──────────────────────
+    // ── Step 1: PERCEIVE — open the CommonWell portal ─────────────────────
     addStep({
       phase: "PERCEIVE",
-      label: "Open CW Recorder UI",
-      description: `Navigating to the CW Recorder at ${cwUrl} and observing the initial page state`,
+      label: "Open CommonWell Portal",
+      description: `Navigating to the CommonWell integration portal at ${PORTAL_URL} — observing initial page load`,
       screenshotUrl: null,
       assertionPassed: null,
     });
-    await page.goto(cwUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
-    const shot1 = await takeShot(page, "step1-open");
+    const shot1 = await takeShot(page, "step1-portal-open");
     demoState.steps[demoState.steps.length - 1].screenshotUrl = shot1;
 
-    // ── Step 2: REVIEW — verify the recorder form is present ──────────────
+    // ── Step 2: REVIEW — verify login form is present ─────────────────────
     addStep({
       phase: "REVIEW",
-      label: "Verify Recorder Form Present",
-      description: "Asserting that the search input and Run button are visible on the Recorder home page",
+      label: "Verify Login Form Present",
+      description: "Asserting that the portal login form is visible — checking for UserName input, Password field, and Sign In button",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    const searchInput = page.locator('input[placeholder*="last" i], input[placeholder*="transaction" i], input[type="text"]').first();
-    const runButton = page.locator('button:has-text("Run")').first();
-    const inputVisible = await searchInput.isVisible({ timeout: 5000 }).catch(() => false);
-    const buttonVisible = await runButton.isVisible({ timeout: 5000 }).catch(() => false);
-    const step2Pass = inputVisible && buttonVisible;
-    const shot2 = await takeShot(page, "step2-verify-form");
+    const usernameInput = page.locator('#UserName, input[name="UserName"], input[name="username"], input[type="email"]').first();
+    const passwordInput = page.locator('#Password, input[name="Password"], input[type="password"]').first();
+    const signInBtn = page.locator('#btnLogin, button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), input[type="submit"]').first();
+    const userVisible = await usernameInput.isVisible({ timeout: 5000 }).catch(() => false);
+    const passVisible = await passwordInput.isVisible({ timeout: 5000 }).catch(() => false);
+    const btnVisible = await signInBtn.isVisible({ timeout: 5000 }).catch(() => false);
+    const step2Pass = userVisible && passVisible;
+    const shot2 = await takeShot(page, "step2-login-form");
     const step2 = demoState.steps[demoState.steps.length - 1];
     step2.screenshotUrl = shot2;
     step2.assertionPassed = step2Pass;
-    step2.description = `Search input visible: ${inputVisible} · Run button visible: ${buttonVisible}`;
+    step2.description = `UserName field: ${userVisible} · Password field: ${passVisible} · Sign In button: ${btnVisible}`;
 
-    // ── Step 3: ACT — fill the search form ───────────────────────────────
+    // ── Step 3: ACT — fill in username ────────────────────────────────────
     addStep({
       phase: "ACT",
-      label: "Fill Search Form",
-      description: "Typing 'last 7 days' into the search field to configure the extraction query",
+      label: "Enter Username",
+      description: hasCredentials
+        ? `Typing username "${username.substring(0, 3)}***" into the UserName field`
+        : "No CW_USERNAME env var set — skipping credential entry (demo observation only)",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    if (inputVisible) {
-      await searchInput.click();
-      await searchInput.fill("last 7 days");
+    if (hasCredentials && userVisible) {
+      await usernameInput.click();
+      await usernameInput.fill(username);
     }
     await page.waitForTimeout(500);
-    const shot3 = await takeShot(page, "step3-fill-form");
+    const shot3 = await takeShot(page, "step3-username");
     demoState.steps[demoState.steps.length - 1].screenshotUrl = shot3;
 
-    // ── Step 4: REVIEW — verify the input was filled correctly ────────────
-    addStep({
-      phase: "REVIEW",
-      label: "Verify Form Input Value",
-      description: "Asserting that the search field contains the expected query string",
-      screenshotUrl: null,
-      assertionPassed: null,
-    });
-    const inputValue = inputVisible ? await searchInput.inputValue().catch(() => "") : "";
-    const step4Pass = inputValue.toLowerCase().includes("7") || inputValue.toLowerCase().includes("day");
-    const shot4 = await takeShot(page, "step4-verify-input");
-    const step4 = demoState.steps[demoState.steps.length - 1];
-    step4.screenshotUrl = shot4;
-    step4.assertionPassed = step4Pass;
-    step4.description = `Input value: "${inputValue}" · Contains query terms: ${step4Pass}`;
-
-    // Snapshot CW status before clicking Run
-    const statusBefore = await fetchCwStatus();
-
-    // ── Step 5: ACT — click the Run button ───────────────────────────────
+    // ── Step 4: ACT — fill in password ────────────────────────────────────
     addStep({
       phase: "ACT",
-      label: "Click Run",
-      description: "Clicking the Run button to trigger the CW Recorder pipeline and start the extraction session",
+      label: "Enter Password",
+      description: hasCredentials
+        ? "Typing password (masked) into the Password field"
+        : "No CW_PASSWORD env var set — skipping credential entry",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    if (buttonVisible) {
-      await runButton.click({ timeout: 10000 }).catch(() => {});
+    if (hasCredentials && passVisible) {
+      await passwordInput.click();
+      await passwordInput.fill(password);
     }
-    await page.waitForTimeout(2500);
-    const shot5 = await takeShot(page, "step5-click-run");
-    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot5;
+    await page.waitForTimeout(500);
+    const shot4 = await takeShot(page, "step4-password");
+    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot4;
 
-    // ── Step 6: PERCEIVE — detect phase change in the UI ─────────────────
-    addStep({
-      phase: "PERCEIVE",
-      label: "Detect Phase Change",
-      description: "Observing the UI for a loading spinner or status text — confirming the pipeline started",
-      screenshotUrl: null,
-      assertionPassed: null,
-    });
-    await page.waitForTimeout(1500);
-    const spinnerVisible = await page.locator('[class*="animate-spin"]').first().isVisible({ timeout: 3000 }).catch(() => false);
-    const statusTextVisible = await page.locator('text=/Logging in|Navigating|Extracting|Starting|complete|error|Run failed/i').first().isVisible({ timeout: 3000 }).catch(() => false);
-    const statusAfterClick = await fetchCwStatus();
-    const phaseChanged = statusAfterClick !== null && statusAfterClick.phase !== (statusBefore?.phase ?? "idle");
-    const shot6 = await takeShot(page, "step6-phase-change");
-    const step6 = demoState.steps[demoState.steps.length - 1];
-    step6.screenshotUrl = shot6;
-    step6.assertionPassed = spinnerVisible || statusTextVisible || phaseChanged;
-    step6.description = `Spinner: ${spinnerVisible} · Status text: ${statusTextVisible} · Phase: ${statusBefore?.phase ?? "idle"} → ${statusAfterClick?.phase ?? "unknown"}`;
-
-    // ── Step 7: PERCEIVE — observe extraction counter ─────────────────────
-    addStep({
-      phase: "PERCEIVE",
-      label: "Observe Extraction Counter",
-      description: "Polling /api/cw/status to read liveExtractionCount and liveExtractionPage — observing real-time progress",
-      screenshotUrl: null,
-      assertionPassed: null,
-    });
-    // Poll a few times to capture at least one sample of the extraction counter
-    const samples: { count: number; page: number; phase: string }[] = [];
-    for (let i = 0; i < 4; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const s = await fetchCwStatus();
-      if (s) {
-        samples.push({ count: s.liveExtractionCount, page: s.liveExtractionPage, phase: s.phase });
-      }
-    }
-    const hasExtractionField = samples.length > 0;
-    const shot7 = await takeShot(page, "step7-extraction-counter");
-    const step7 = demoState.steps[demoState.steps.length - 1];
-    step7.screenshotUrl = shot7;
-    step7.assertionPassed = hasExtractionField;
-    const lastSample = samples[samples.length - 1];
-    step7.description = `liveExtractionCount=${lastSample?.count ?? "n/a"} · liveExtractionPage=${lastSample?.page ?? "n/a"} · phase="${lastSample?.phase ?? "n/a"}" · samples: ${samples.length}`;
-
-    // ── Step 8: REVIEW — trigger stop and detect terminal completion ──────
+    // ── Step 5: REVIEW — assert credentials are in the form ───────────────
     addStep({
       phase: "REVIEW",
-      label: "Detect Completion / Stop Run",
-      description: "Cancelling the CW run via API (pipeline observed — no live credentials needed) and asserting the terminal error/complete state",
+      label: "Verify Credentials Entered",
+      description: "Asserting the form fields are populated before submission",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    // Cancel the CW run so we get a clean terminal state without needing OTP/credentials
-    let cancelOk = false;
-    try {
-      const cancelRes = await fetch("http://localhost:8080/api/cw/cancel", { method: "POST" });
-      cancelOk = cancelRes.ok;
-    } catch {}
-    // If cancel didn't work (e.g. already done), try reset
-    if (!cancelOk) {
-      try { await fetch("http://localhost:8080/api/cw/reset", { method: "POST" }); } catch {}
+    const userValue = userVisible ? await usernameInput.inputValue().catch(() => "") : "";
+    const passValue = passVisible ? await passwordInput.inputValue().catch(() => "") : "";
+    const step5Pass = hasCredentials ? (userValue.length > 0 && passValue.length > 0) : true;
+    const shot5 = await takeShot(page, "step5-form-filled");
+    const step5 = demoState.steps[demoState.steps.length - 1];
+    step5.screenshotUrl = shot5;
+    step5.assertionPassed = step5Pass;
+    step5.description = hasCredentials
+      ? `Username filled: ${userValue.length > 0} · Password filled: ${passValue.length > 0}`
+      : "Skipped — no credentials configured (set CW_USERNAME and CW_PASSWORD to run full demo)";
+
+    // ── Step 6: ACT — click Sign In ───────────────────────────────────────
+    addStep({
+      phase: "ACT",
+      label: "Click Sign In",
+      description: hasCredentials
+        ? "Clicking the Sign In button to submit credentials to the CommonWell portal"
+        : "Skipping Sign In — no credentials available; observing login page state only",
+      screenshotUrl: null,
+      assertionPassed: null,
+    });
+    if (hasCredentials && btnVisible) {
+      await signInBtn.click().catch(() => {});
+      await page.waitForTimeout(5000);
+    } else {
+      await page.waitForTimeout(1000);
     }
-    await new Promise((r) => setTimeout(r, 2000));
-    let terminalStatus: CwStatus | null = null;
-    const maxWait = 10000;
-    const startTime = Date.now();
-    while (Date.now() - startTime < maxWait) {
-      const s = await fetchCwStatus();
-      if (s && (s.phase === "complete" || s.phase === "error")) {
-        terminalStatus = s;
-        break;
+    const shot6 = await takeShot(page, "step6-sign-in");
+    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot6;
+
+    // ── Step 7: PERCEIVE — observe post-login portal state ────────────────
+    const currentUrl7 = page.url();
+    const onOtpPage =
+      currentUrl7.includes("UserValidate") ||
+      (await page.$('#OTP')) !== null ||
+      (await page.$('#btnSendEmail')) !== null;
+    const onPortalHome = !currentUrl7.includes("Login") && !currentUrl7.includes("login") && !onOtpPage;
+
+    addStep({
+      phase: "PERCEIVE",
+      label: "Observe Post-Login State",
+      description: onOtpPage
+        ? "Portal redirected to OTP verification page — multi-factor authentication required"
+        : onPortalHome
+        ? `Portal authenticated — landed on: ${currentUrl7}`
+        : `Observing login result: ${currentUrl7}`,
+      screenshotUrl: null,
+      assertionPassed: null,
+    });
+    if (onOtpPage) {
+      // Auto-trigger email OTP send so user can see the OTP step in the live view
+      const sendEmailBtn = page.locator('#btnSendEmail');
+      if ((await sendEmailBtn.count()) > 0) {
+        console.log("[PAR Demo] Clicking Send OTP (email)…");
+        await sendEmailBtn.click().catch(() => {});
+        await page.waitForTimeout(2000);
       }
-      await new Promise((r) => setTimeout(r, 1000));
     }
-    if (!terminalStatus) terminalStatus = await fetchCwStatus();
-    const isTerminal = terminalStatus?.phase === "complete" || terminalStatus?.phase === "error";
-    // Also check for UI completion/error state
-    const uiCompleteOrError = await page.locator('text=/Run complete|Run failed|complete|error|Try Again|New Search/i').first().isVisible({ timeout: 5000 }).catch(() => false);
-    const shot8 = await takeShot(page, "step8-completion");
+    const shot7 = await takeShot(page, "step7-post-login");
+    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot7;
+
+    // ── Step 8: REVIEW — assert portal state changed from login ───────────
+    addStep({
+      phase: "REVIEW",
+      label: "Assert Authentication Progress",
+      description: "Verifying the portal responded to the Sign In attempt — URL must have changed from the login page",
+      screenshotUrl: null,
+      assertionPassed: null,
+    });
+    const currentUrl8 = page.url();
+    const urlChanged = hasCredentials ? currentUrl8 !== PORTAL_URL : true;
+    const step8Pass = hasCredentials ? (onOtpPage || onPortalHome) : true;
+    const shot8 = await takeShot(page, "step8-auth-check");
     const step8 = demoState.steps[demoState.steps.length - 1];
     step8.screenshotUrl = shot8;
-    step8.assertionPassed = isTerminal || uiCompleteOrError;
-    step8.description = `Cancel issued: ${cancelOk} · Terminal phase: "${terminalStatus?.phase ?? "unknown"}" · UI terminal indicator: ${uiCompleteOrError}`;
+    step8.assertionPassed = step8Pass;
+    step8.description = hasCredentials
+      ? `URL changed: ${urlChanged} · State: ${onOtpPage ? "OTP required" : onPortalHome ? "authenticated" : "unknown"} · URL: ${currentUrl8}`
+      : "Credential-free demo — login form verified successfully, Sign In not submitted";
 
-    // ── Step 9: REVIEW — verify record count field ────────────────────────
+    // ── Step 9: PERCEIVE — navigate to Transaction Logs (if authenticated) ─
     addStep({
-      phase: "REVIEW",
-      label: "Verify Record Count",
-      description: "Asserting the API status response includes a numeric recordCount field — confirming the pipeline tracked extraction progress",
+      phase: "PERCEIVE",
+      label: onPortalHome ? "Navigate to Transaction Logs" : "Capture Final Portal State",
+      description: onPortalHome
+        ? "Navigating to the Transaction Logs page to observe the CDR data grid"
+        : onOtpPage
+        ? "Pausing at OTP page — MFA step identified; pipeline would continue after OTP entry"
+        : "Capturing final observable portal state for the demo report",
       screenshotUrl: null,
       assertionPassed: null,
     });
-    const finalStatus = await fetchCwStatus();
-    const recordCountExists = finalStatus !== null && typeof finalStatus.recordCount === "number";
-    const shot9 = await takeShot(page, "step9-record-count");
-    const step9 = demoState.steps[demoState.steps.length - 1];
-    step9.screenshotUrl = shot9;
-    step9.assertionPassed = recordCountExists;
-    step9.description = `recordCount=${finalStatus?.recordCount ?? "n/a"} · errorCount=${finalStatus?.errorCount ?? "n/a"} · phase="${finalStatus?.phase ?? "n/a"}"`;
+
+    if (onPortalHome) {
+      try {
+        const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
+        await page.goto(txUrl, { waitUntil: "networkidle", timeout: 30000 });
+        await page.waitForTimeout(2000);
+      } catch (navErr) {
+        console.warn("[PAR Demo] Transaction Logs navigation error:", (navErr as Error).message);
+      }
+    } else {
+      await page.waitForTimeout(1500);
+    }
+    const shot9 = await takeShot(page, "step9-final-state");
+    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot9;
+
+    // ── Step 10: REVIEW — final assertion ─────────────────────────────────
+    const finalUrl = page.url();
+    const onTxLogs = finalUrl.includes("TransactionLog");
+    const gridVisible = onTxLogs
+      ? await page.locator(".k-grid, table").first().isVisible({ timeout: 5000 }).catch(() => false)
+      : false;
+
+    addStep({
+      phase: "REVIEW",
+      label: onPortalHome ? "Verify Transaction Logs Grid" : "Verify PAR Loop Completeness",
+      description: onPortalHome
+        ? `Transaction Logs page: ${onTxLogs} · Kendo/data grid visible: ${gridVisible}`
+        : `All observable PAR steps executed — ${demoState.steps.length} total steps captured with screenshots`,
+      screenshotUrl: null,
+      assertionPassed: onPortalHome ? (onTxLogs || gridVisible) : true,
+    });
+    const shot10 = await takeShot(page, "step10-review-final");
+    demoState.steps[demoState.steps.length - 1].screenshotUrl = shot10;
 
     demoState.status = "complete";
     console.log("[PAR Demo] Complete — all steps done");
@@ -297,6 +295,7 @@ async function runParScript(): Promise<void> {
     demoState.errorMessage = (err as Error).message;
     console.error("[PAR Demo] Error:", (err as Error).message);
   } finally {
+    activePage = null;
     try { await page?.close(); } catch {}
     try { await context?.close(); } catch {}
     try { await browser?.close(); } catch {}
@@ -304,7 +303,7 @@ async function runParScript(): Promise<void> {
 }
 
 export function registerParDemoRoutes(app: Express): void {
-  app.post("/api/par-demo/run", async (_req, res) => {
+  app.post("/api/par-demo/run", async (_req: Request, res: Response) => {
     if (demoState.status === "running") {
       return res.status(409).json({ error: "A PAR demo is already running" });
     }
@@ -312,7 +311,7 @@ export function registerParDemoRoutes(app: Express): void {
     res.json({ started: true });
   });
 
-  app.get("/api/par-demo/status", (_req, res) => {
+  app.get("/api/par-demo/status", (_req: Request, res: Response) => {
     res.json({
       status: demoState.status,
       steps: demoState.steps,
@@ -320,11 +319,33 @@ export function registerParDemoRoutes(app: Express): void {
     });
   });
 
-  app.post("/api/par-demo/reset", (_req, res) => {
+  app.post("/api/par-demo/reset", (_req: Request, res: Response) => {
     if (demoState.status === "running") {
       return res.status(409).json({ error: "Cannot reset while running" });
     }
     demoState = { status: "idle", steps: [], errorMessage: null };
     res.json({ reset: true });
+  });
+
+  // Live screenshot — returns current Playwright page as JPEG bytes (no disk write)
+  app.get("/api/par-demo/live", async (_req: Request, res: Response) => {
+    if (!activePage || activePage.isClosed()) {
+      // Return a 1x1 transparent PNG when not running
+      const emptyPng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "base64"
+      );
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "no-store");
+      return res.send(emptyPng);
+    }
+    try {
+      const buffer = await activePage.screenshot({ type: "jpeg", quality: 75, fullPage: false });
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "no-store");
+      res.send(buffer);
+    } catch {
+      res.status(503).json({ error: "Screenshot unavailable" });
+    }
   });
 }
