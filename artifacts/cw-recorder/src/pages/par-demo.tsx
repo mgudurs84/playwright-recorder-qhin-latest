@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
-  Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles, ChevronDown, ChevronUp,
+  Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles,
+  AlertTriangle, BarChart3, Building2, Lightbulb, ArrowRight,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
@@ -86,48 +87,43 @@ function StepCard({ step, index, active }: { step: PARStep; index: number; activ
   );
 }
 
-// Lightweight markdown renderer — no dependencies
-function SimpleMarkdown({ text }: { text: string }) {
-  const lines = text.split("\n");
+// ── Inline markdown renderer ────────────────────────────────────────────────
+function renderInline(line: string): React.ReactNode[] {
+  const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, pi) => {
+    if (part.startsWith("**") && part.endsWith("**"))
+      return <strong key={pi} className="text-foreground/90 font-semibold">{part.slice(2, -2)}</strong>;
+    if (part.startsWith("`") && part.endsWith("`"))
+      return <code key={pi} className="bg-white/5 px-1 rounded text-[10px] font-mono text-emerald-300">{part.slice(1, -1)}</code>;
+    return <span key={pi}>{part}</span>;
+  });
+}
+
+function SectionBody({ lines }: { lines: string[] }) {
   const elements: React.ReactNode[] = [];
   let i = 0;
-
-  const renderInline = (line: string) => {
-    // **bold**, `code`
-    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-    return parts.map((part, pi) => {
-      if (part.startsWith("**") && part.endsWith("**")) {
-        return <strong key={pi} className="text-foreground font-semibold">{part.slice(2, -2)}</strong>;
-      }
-      if (part.startsWith("`") && part.endsWith("`")) {
-        return <code key={pi} className="bg-muted/50 px-1 rounded text-xs font-mono text-emerald-300">{part.slice(1, -1)}</code>;
-      }
-      return part;
-    });
-  };
-
   while (i < lines.length) {
     const line = lines[i];
-
-    // Table
     if (line.includes("|") && lines[i + 1]?.match(/^\s*\|[\s-|]+\|\s*$/)) {
       const headers = line.split("|").map((h) => h.trim()).filter(Boolean);
-      i += 2; // skip separator
+      i += 2;
       const rows: string[][] = [];
       while (i < lines.length && lines[i].includes("|")) {
         rows.push(lines[i].split("|").map((c) => c.trim()).filter(Boolean));
         i++;
       }
       elements.push(
-        <div key={i} className="overflow-x-auto my-2">
-          <table className="text-xs w-full border-collapse">
+        <div key={`tbl-${i}`} className="overflow-x-auto rounded-lg border border-white/8 my-2">
+          <table className="text-[10px] w-full border-collapse">
             <thead>
-              <tr>{headers.map((h, hi) => <th key={hi} className="text-left px-2 py-1 border border-border/50 bg-muted/30 text-muted-foreground font-medium">{h}</th>)}</tr>
+              <tr className="bg-white/5">
+                {headers.map((h, hi) => <th key={hi} className="text-left px-2.5 py-1.5 text-muted-foreground font-semibold border-b border-white/8">{h}</th>)}
+              </tr>
             </thead>
             <tbody>
               {rows.map((row, ri) => (
-                <tr key={ri} className="border-t border-border/30">
-                  {row.map((cell, ci) => <td key={ci} className="px-2 py-1 border border-border/30 text-foreground/80">{cell}</td>)}
+                <tr key={ri} className={ri % 2 === 0 ? "" : "bg-white/[0.02]"}>
+                  {row.map((cell, ci) => <td key={ci} className="px-2.5 py-1.5 text-foreground/75 border-t border-white/5">{cell}</td>)}
                 </tr>
               ))}
             </tbody>
@@ -136,95 +132,114 @@ function SimpleMarkdown({ text }: { text: string }) {
       );
       continue;
     }
-
-    // Headings
-    if (line.startsWith("### ")) {
-      elements.push(<h3 key={i} className="text-sm font-bold text-foreground mt-3 mb-1 flex items-center gap-1.5">{line.slice(4)}</h3>);
-    } else if (line.startsWith("## ")) {
-      elements.push(<h2 key={i} className="text-sm font-bold text-foreground mt-4 mb-1">{line.slice(3)}</h2>);
-    } else if (line.startsWith("# ")) {
-      elements.push(<h2 key={i} className="text-base font-bold text-foreground mt-4 mb-1">{line.slice(2)}</h2>);
-    // Bullets
-    } else if (line.match(/^[-*] /)) {
+    if (line.match(/^[-*] /)) {
       elements.push(
-        <div key={i} className="flex gap-1.5 text-xs text-muted-foreground leading-relaxed">
-          <span className="text-primary shrink-0 mt-0.5">•</span>
+        <div key={`b-${i}`} className="flex gap-2 text-[11px] text-muted-foreground leading-relaxed">
+          <span className="text-violet-400 shrink-0 mt-0.5 text-[8px]">◆</span>
           <span>{renderInline(line.slice(2))}</span>
         </div>
       );
-    // Numbered list
     } else if (line.match(/^\d+\. /)) {
       const num = line.match(/^(\d+)\. /)?.[1];
       elements.push(
-        <div key={i} className="flex gap-1.5 text-xs text-muted-foreground leading-relaxed">
-          <span className="text-primary shrink-0 font-medium w-4">{num}.</span>
+        <div key={`n-${i}`} className="flex gap-2 text-[11px] text-muted-foreground leading-relaxed">
+          <span className="text-violet-400 shrink-0 font-bold w-3.5 text-right">{num}.</span>
           <span>{renderInline(line.replace(/^\d+\. /, ""))}</span>
         </div>
       );
-    // Horizontal rule
-    } else if (line.match(/^---+$/)) {
-      elements.push(<hr key={i} className="border-border/30 my-2" />);
-    // Empty line
-    } else if (line.trim() === "") {
-      elements.push(<div key={i} className="h-1" />);
-    // Normal paragraph
-    } else {
-      elements.push(<p key={i} className="text-xs text-muted-foreground leading-relaxed">{renderInline(line)}</p>);
+    } else if (line.match(/^---+$/) ) {
+      elements.push(<hr key={`hr-${i}`} className="border-white/8 my-1" />);
+    } else if (line.trim()) {
+      elements.push(<p key={`p-${i}`} className="text-[11px] text-muted-foreground leading-relaxed">{renderInline(line)}</p>);
     }
     i++;
   }
-  return <div className="space-y-0.5">{elements}</div>;
+  return <div className="space-y-1">{elements}</div>;
 }
 
-// AI Summary panel
-function AiSummaryPanel({ summary, pending }: { summary: string | null; pending: boolean }) {
-  const [collapsed, setCollapsed] = useState(false);
+// Section definitions — maps heading keywords to icon + accent color
+const SECTION_DEFS: { match: RegExp; icon: typeof AlertTriangle; label: string; color: string; border: string; bg: string }[] = [
+  { match: /overview|summary/i,     icon: AlertTriangle, label: "Error Overview",           color: "text-red-400",    border: "border-red-500/25",    bg: "bg-red-500/5"    },
+  { match: /pattern|breakdown/i,    icon: BarChart3,     label: "Error Pattern Breakdown",   color: "text-orange-400", border: "border-orange-500/25", bg: "bg-orange-500/5" },
+  { match: /organi|transaction/i,   icon: Building2,     label: "Affected Organisations",    color: "text-sky-400",    border: "border-sky-500/25",    bg: "bg-sky-500/5"    },
+  { match: /finding|insight/i,      icon: Lightbulb,     label: "Key Findings",              color: "text-yellow-400", border: "border-yellow-500/25", bg: "bg-yellow-500/5" },
+  { match: /next step|recommend/i,  icon: ArrowRight,    label: "Recommended Next Steps",    color: "text-emerald-400",border: "border-emerald-500/25",bg: "bg-emerald-500/5"},
+];
 
+function parseSections(text: string) {
+  const chunks = text.split(/^#{1,3} .+$/m).filter((_, i) => i > 0);
+  const headings = [...text.matchAll(/^#{1,3} (.+)$/gm)].map((m) => m[1]);
+  return headings.map((heading, i) => {
+    const bodyLines = (chunks[i] ?? "").split("\n").filter((l) => l !== undefined);
+    const def = SECTION_DEFS.find((d) => d.match.test(heading)) ?? {
+      icon: Sparkles, label: heading.replace(/^[^\w]+/, "").trim(),
+      color: "text-violet-400", border: "border-violet-500/25", bg: "bg-violet-500/5",
+    };
+    return { heading, bodyLines, def };
+  });
+}
+
+// Shimmer skeleton
+function Skeleton({ className }: { className?: string }) {
+  return <div className={`rounded animate-pulse bg-white/8 ${className ?? ""}`} />;
+}
+
+// ── AI Summary panel ─────────────────────────────────────────────────────────
+function AiSummaryPanel({ summary, pending }: { summary: string | null; pending: boolean }) {
   if (!pending && !summary) return null;
+  const sections = summary ? parseSections(summary) : [];
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="rounded-2xl border border-violet-500/30 bg-violet-500/5 overflow-hidden"
-    >
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+      className="rounded-xl border border-violet-500/20 bg-[#0f0a1e] overflow-hidden">
+
       {/* Header */}
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-violet-500/5 transition-colors"
-      >
-        <div className="w-7 h-7 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center shrink-0">
-          <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-violet-500/15">
+        <div className="w-6 h-6 rounded-md bg-violet-500/15 border border-violet-500/30 flex items-center justify-center shrink-0">
+          <Sparkles className="w-3 h-3 text-violet-400" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-violet-300">Vertex AI — Server Error Analysis</p>
-          <p className="text-xs text-muted-foreground">
-            {pending ? "Gemini 2.5 Flash is analysing…" : "Gemini 2.5 Flash · CDR error summary"}
-          </p>
+          <p className="text-[11px] font-semibold text-violet-300 leading-none mb-0.5">Vertex AI · Server Error Analysis</p>
+          <p className="text-[10px] text-muted-foreground/60 leading-none">Gemini 2.5 Flash</p>
         </div>
-        {pending ? (
-          <Loader2 className="w-4 h-4 text-violet-400 animate-spin shrink-0" />
-        ) : (
-          collapsed ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+        {pending && <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />}
+        {!pending && summary && (
+          <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Done</span>
         )}
-      </button>
+      </div>
 
       {/* Body */}
-      {!collapsed && (
-        <div className="px-4 pb-4 border-t border-violet-500/15">
-          {pending && (
-            <div className="flex items-center gap-2 py-4">
-              <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />
-              <span className="text-xs text-muted-foreground">Analysing server errors with Gemini 2.5 Flash…</span>
+      <div className="p-3 space-y-2">
+        {pending && !summary && (
+          <>
+            {[80, 60, 90, 50, 70].map((w, i) => (
+              <div key={i} className="rounded-lg border border-white/6 bg-white/[0.02] p-3 space-y-1.5">
+                <Skeleton className="h-3 w-28" />
+                <Skeleton className={`h-2.5 w-[${w}%]`} />
+                <Skeleton className="h-2.5 w-3/4" />
+              </div>
+            ))}
+          </>
+        )}
+
+        {sections.length > 0 && sections.map(({ heading, bodyLines, def }) => {
+          const Icon = def.icon;
+          return (
+            <div key={heading} className={`rounded-lg border ${def.border} ${def.bg} p-3`}>
+              <div className={`flex items-center gap-1.5 mb-2 ${def.color}`}>
+                <Icon className="w-3 h-3 shrink-0" />
+                <span className="text-[10px] font-bold uppercase tracking-wide">{def.label}</span>
+              </div>
+              <SectionBody lines={bodyLines} />
             </div>
-          )}
-          {summary && (
-            <div className="mt-3">
-              <SimpleMarkdown text={summary} />
-            </div>
-          )}
-        </div>
-      )}
+          );
+        })}
+
+        {/* Fallback: summary without recognisable sections */}
+        {!pending && summary && sections.length === 0 && (
+          <div className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap">{summary}</div>
+        )}
+      </div>
     </motion.div>
   );
 }
@@ -341,12 +356,12 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
         )}
         {frameA && (
           <img src={frameA} alt="Playwright live view" onLoad={onLoadA}
-            className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
+            className="absolute inset-0 w-full h-full object-contain object-top"
             style={{ opacity: active === "A" ? 1 : 0 }} />
         )}
         {frameB && (
           <img src={frameB} alt="Playwright live view" onLoad={onLoadB}
-            className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
+            className="absolute inset-0 w-full h-full object-contain object-top"
             style={{ opacity: active === "B" ? 1 : 0 }} />
         )}
         {status === "running" && (

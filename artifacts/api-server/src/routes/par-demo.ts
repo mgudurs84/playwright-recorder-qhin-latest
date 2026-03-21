@@ -88,24 +88,24 @@ ${pageText.slice(0, 12000)}
 
 ---
 
-Produce a concise but actionable summary with these sections (use markdown):
+Respond ONLY with markdown using exactly these five section headings (copy them verbatim):
 
-### 🔴 Server Error Overview
-- Total errors visible, time range, and overall severity assessment
+### Server Error Overview
+One short paragraph: total visible errors, time range if shown, overall severity.
 
-### 📊 Error Pattern Breakdown
-- Group errors by type/status/cause if discernible from the data (use a table)
+### Error Pattern Breakdown
+A markdown table grouping errors by type, status code, or cause. If data is sparse, use bullet points instead.
 
-### 🏥 Affected Organisations / Transaction Types
-- Which orgs or transaction types appear most in the errors
+### Affected Organisations / Transaction Types
+Bullet list of which organisations or transaction types appear most frequently.
 
-### ⚡ Key Findings
-- The 3–5 most important insights from the error data
+### Key Findings
+3–5 concise bullet points highlighting the most important insights.
 
-### ✅ Recommended Next Steps
-- Concrete, prioritised actions the CDR team should take
+### Recommended Next Steps
+Numbered list of concrete, prioritised actions for the CDR operations team.
 
-Keep it factual and data-driven. If the data is limited, say so clearly.`,
+Be factual and data-driven. If the data is limited or unclear, say so briefly within each section.`,
   });
   return text;
 }
