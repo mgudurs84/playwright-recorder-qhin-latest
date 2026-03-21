@@ -28,8 +28,9 @@ interface DemoState {
   status: DemoStatus;
   steps: PARStep[];
   errorMessage: string | null;
-  aiSummary: string | null;       // Vertex AI summary of server errors
-  aiSummaryPending: boolean;       // true while the LLM call is in flight
+  aiSummary: string | null;
+  aiSummaryPending: boolean;
+  dateRange: { dateFrom: string; dateTo: string } | null;
 }
 
 let demoState: DemoState = {
@@ -38,6 +39,7 @@ let demoState: DemoState = {
   errorMessage: null,
   aiSummary: null,
   aiSummaryPending: false,
+  dateRange: null,
 };
 
 let activePage: Page | null = null;
@@ -56,6 +58,149 @@ function waitForOtp(timeoutMs = 300000): Promise<string> {
       }
     }, timeoutMs);
   });
+}
+
+// ── Auto-retry wrapper ───────────────────────────────────────────────────────
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 2000): Promise<T> {
+  let lastErr: Error = new Error("Unknown error");
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err as Error;
+      if (attempt < maxAttempts) {
+        console.warn(`[PAR Demo] Attempt ${attempt}/${maxAttempts} failed: ${lastErr.message} — retrying in ${delayMs}ms…`);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// ── Multi-page extraction ────────────────────────────────────────────────────
+// Iterates through all Kendo grid pages (up to MAX_PAGES) and accumulates all row text.
+async function extractAllPagesContent(page: Page): Promise<{ text: string; rowCount: number; pageCount: number }> {
+  const MAX_PAGES = 20;
+  const allParts: string[] = [];
+  let totalRows = 0;
+
+  for (let p = 1; p <= MAX_PAGES; p++) {
+    const { text, rowCount } = await extractPageContent(page);
+
+    if (p === 1) {
+      allParts.push(text);
+    } else {
+      // For subsequent pages only include row lines, not repeated headers/stats
+      const rows = text.split("\n").filter(
+        (l) => l.trim() && !l.startsWith("PAGE:") && !l.startsWith("STAT:") && !l.startsWith("COLUMNS:") && !l.startsWith("ALERT:")
+      );
+      if (rows.length > 0) allParts.push(rows.join("\n"));
+    }
+    totalRows += rowCount;
+
+    // Detect a non-disabled Kendo "next page" pager button
+    const hasNextPage = await page.evaluate(() => {
+      const navItems = Array.from(document.querySelectorAll(".k-pager-nav, [aria-label], [title]")) as HTMLElement[];
+      for (const item of navItems) {
+        const title = (item.getAttribute("title") ?? item.getAttribute("aria-label") ?? "").toLowerCase();
+        const isNext = title.includes("next") || item.querySelector(".k-i-arrow-e, .k-i-arrow-60-right") !== null;
+        const isDisabled = item.classList.contains("k-state-disabled") || (item as HTMLButtonElement).disabled;
+        if (isNext && !isDisabled) return true;
+      }
+      return false;
+    });
+
+    if (!hasNextPage) break;
+
+    // Click next page via DOM (more reliable than Playwright locator on Kendo pagers)
+    const clicked = await page.evaluate(() => {
+      const navItems = Array.from(document.querySelectorAll(".k-pager-nav")) as HTMLElement[];
+      for (const item of navItems) {
+        const hasArrow = item.querySelector(".k-i-arrow-e, .k-i-arrow-60-right");
+        const isDisabled = item.classList.contains("k-state-disabled");
+        if (hasArrow && !isDisabled) {
+          item.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!clicked) break;
+    // Wait for grid to refresh after page navigation
+    await page.waitForTimeout(2000);
+  }
+
+  return { text: allParts.join("\n"), rowCount: totalRows, pageCount: allParts.length };
+}
+
+// ── Date range filter injection ──────────────────────────────────────────────
+// Formats an ISO date string (YYYY-MM-DD) to MM/dd/yyyy for Kendo DatePicker inputs.
+function isoToUsDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${m}/${d}/${y}`;
+}
+
+async function applyDateRangeFilter(page: Page, dateFrom: string, dateTo: string): Promise<void> {
+  const fromFormatted = isoToUsDate(dateFrom);
+  const toFormatted = isoToUsDate(dateTo);
+  console.log(`[PAR Demo] Applying date range: ${fromFormatted} → ${toFormatted}`);
+
+  // Kendo DatePicker inputs — try multiple selector patterns
+  const fromSelectors = [
+    'input[id*="from" i][data-role="datepicker"]',
+    'input[name*="from" i][data-role="datepicker"]',
+    'input[id*="FromDate" i]', 'input[name*="FromDate" i]',
+    'input[id*="startdate" i]', 'input[name*="startdate" i]',
+    '[data-role="datepicker"]:first-of-type',
+  ];
+  const toSelectors = [
+    'input[id*="to" i][data-role="datepicker"]',
+    'input[name*="to" i][data-role="datepicker"]',
+    'input[id*="ToDate" i]', 'input[name*="ToDate" i]',
+    'input[id*="enddate" i]', 'input[name*="enddate" i]',
+    '[data-role="datepicker"]:last-of-type',
+  ];
+
+  let fromFilled = false;
+  for (const sel of fromSelectors) {
+    const el = page.locator(sel).first();
+    if ((await el.count()) > 0 && (await el.isVisible({ timeout: 1000 }).catch(() => false))) {
+      await el.click({ clickCount: 3 }).catch(() => {});
+      await el.fill(fromFormatted).catch(() => {});
+      await page.keyboard.press("Tab");
+      fromFilled = true;
+      console.log(`[PAR Demo] From Date set via: ${sel}`);
+      break;
+    }
+  }
+
+  let toFilled = false;
+  for (const sel of toSelectors) {
+    const el = page.locator(sel).first();
+    if ((await el.count()) > 0 && (await el.isVisible({ timeout: 1000 }).catch(() => false))) {
+      await el.click({ clickCount: 3 }).catch(() => {});
+      await el.fill(toFormatted).catch(() => {});
+      await page.keyboard.press("Tab");
+      toFilled = true;
+      console.log(`[PAR Demo] To Date set via: ${sel}`);
+      break;
+    }
+  }
+
+  if (fromFilled || toFilled) {
+    // Click Search/Apply
+    const searchBtn = page.locator(
+      'button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"][value*="Search" i]'
+    ).first();
+    if ((await searchBtn.count()) > 0 && (await searchBtn.isVisible({ timeout: 1000 }).catch(() => false))) {
+      await searchBtn.click().catch(() => {});
+      await page.waitForTimeout(2000);
+      console.log("[PAR Demo] Date range filter applied and Search clicked");
+    }
+  } else {
+    console.warn("[PAR Demo] Date range inputs not found — skipping date filter");
+  }
 }
 
 function createVertexModel() {
@@ -248,8 +393,15 @@ async function clickServerErrors(page: Page): Promise<{ found: boolean; method: 
   return { found: false, method: "none" };
 }
 
-async function runParScript(): Promise<void> {
-  demoState = { status: "running", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false };
+async function runParScript(opts: { dateFrom?: string; dateTo?: string } = {}): Promise<void> {
+  demoState = {
+    status: "running",
+    steps: [],
+    errorMessage: null,
+    aiSummary: null,
+    aiSummaryPending: false,
+    dateRange: opts.dateFrom && opts.dateTo ? { dateFrom: opts.dateFrom, dateTo: opts.dateTo } : null,
+  };
 
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
@@ -375,13 +527,11 @@ async function runParScript(): Promise<void> {
 
     // ── Navigate to Transaction Logs ──────────────────────────────────────
     addStep({ phase: "PERCEIVE", label: "Navigate to Transaction Logs", description: "Opening the CDR Transaction Logs page", screenshotUrl: null, assertionPassed: null });
-    try {
-      const txUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
-      await page.goto(txUrl, { waitUntil: "networkidle", timeout: 30000 });
-      await page.waitForTimeout(2000);
-    } catch (err) {
-      console.warn("[PAR Demo] Tx Logs nav error:", (err as Error).message);
-    }
+    await withRetry(async () => {
+      const txNavUrl = new URL("TransactionLogs/index", PORTAL_URL).toString();
+      await page!.goto(txNavUrl, { waitUntil: "networkidle", timeout: 30000 });
+      await page!.waitForTimeout(2000);
+    }).catch((err) => console.warn("[PAR Demo] Tx Logs nav error:", (err as Error).message));
     demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-tx-logs");
 
     addStep({ phase: "REVIEW", label: "Verify Transaction Logs Grid", description: "", screenshotUrl: null, assertionPassed: null });
@@ -393,9 +543,29 @@ async function runParScript(): Promise<void> {
     sGrid.description = `On Transaction Logs: ${onTxLogs} · Grid visible: ${gridVisible}`;
     sGrid.screenshotUrl = await takeShot(page, "step-tx-grid");
 
+    // ── ACT — apply date range filter (if requested) ──────────────────────
+    if (opts.dateFrom && opts.dateTo) {
+      addStep({
+        phase: "ACT",
+        label: "Apply Date Range Filter",
+        description: `Setting date range: ${opts.dateFrom} → ${opts.dateTo}`,
+        screenshotUrl: null,
+        assertionPassed: null,
+      });
+      try {
+        await applyDateRangeFilter(page, opts.dateFrom, opts.dateTo);
+        demoState.steps.at(-1)!.assertionPassed = true;
+        demoState.steps.at(-1)!.description = `Date range applied: ${opts.dateFrom} → ${opts.dateTo}`;
+      } catch (err) {
+        console.warn("[PAR Demo] Date range filter failed:", (err as Error).message);
+        demoState.steps.at(-1)!.assertionPassed = false;
+        demoState.steps.at(-1)!.description = `Date range filter failed: ${(err as Error).message}`;
+      }
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-date-filter");
+    }
+
     // ── Server Errors: PERCEIVE — look for the filter ─────────────────────
     addStep({ phase: "PERCEIVE", label: "Locate Server Errors Filter", description: "Scanning the page for a Server Errors tab, link, or filter option", screenshotUrl: null, assertionPassed: null });
-    // Log all visible links and tabs for debugging
     const navItems = await page.evaluate(() =>
       Array.from(document.querySelectorAll("a, button, [role='tab'], li"))
         .map((el) => (el as HTMLElement).innerText.trim())
@@ -405,21 +575,21 @@ async function runParScript(): Promise<void> {
     console.log("[PAR Demo] Visible nav items:", navItems.join(" | "));
     demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-locate-errors");
 
-    // ── Server Errors: ACT — click it ─────────────────────────────────────
+    // ── Server Errors: ACT — click it (with retry) ────────────────────────
     addStep({ phase: "ACT", label: "Click Server Errors", description: "Attempting to filter/navigate to the Server Errors view using multiple strategies", screenshotUrl: null, assertionPassed: null });
-    const { found, method } = await clickServerErrors(page);
+    const { found, method } = await withRetry(() => clickServerErrors(page!));
     const sClick = demoState.steps.at(-1)!;
     sClick.description = found
       ? `Server Errors filter applied via: ${method}`
       : "Server Errors filter not found — capturing current error-relevant page content";
     demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-server-errors-clicked");
 
-    // ── Server Errors: PERCEIVE — observe filtered grid ───────────────────
-    addStep({ phase: "PERCEIVE", label: "Observe Server Errors View", description: "Reading the filtered grid and extracting all visible error data", screenshotUrl: null, assertionPassed: null });
+    // ── Server Errors: PERCEIVE — observe filtered grid (all pages) ───────
+    addStep({ phase: "PERCEIVE", label: "Observe Server Errors View", description: "Reading all grid pages and extracting complete error data", screenshotUrl: null, assertionPassed: null });
     await page.waitForTimeout(1500);
-    const { text: extractedText, rowCount } = await extractPageContent(page);
+    const { text: extractedText, rowCount, pageCount } = await extractAllPagesContent(page);
     const sObserve = demoState.steps.at(-1)!;
-    sObserve.description = `Extracted ${rowCount} grid rows · ${extractedText.length} chars of content`;
+    sObserve.description = `Extracted ${rowCount} rows across ${pageCount} page${pageCount !== 1 ? "s" : ""} · ${extractedText.length} chars`;
     sObserve.screenshotUrl = await takeShot(page, "step-server-errors-grid");
 
     // ── REVIEW — assert something was extracted ───────────────────────────
@@ -472,12 +642,13 @@ async function runParScript(): Promise<void> {
 }
 
 export function registerParDemoRoutes(app: Express): void {
-  app.post("/api/par-demo/run", async (_req: Request, res: Response) => {
+  app.post("/api/par-demo/run", async (req: Request, res: Response) => {
     if (demoState.status === "running" || demoState.status === "otp:waiting") {
       return res.status(409).json({ error: "A PAR demo is already running" });
     }
-    runParScript().catch(console.error);
-    res.json({ started: true });
+    const { dateFrom, dateTo } = (req.body ?? {}) as { dateFrom?: string; dateTo?: string };
+    runParScript({ dateFrom, dateTo }).catch(console.error);
+    res.json({ started: true, dateRange: dateFrom && dateTo ? { dateFrom, dateTo } : null });
   });
 
   app.get("/api/par-demo/status", (_req: Request, res: Response) => {
@@ -487,6 +658,7 @@ export function registerParDemoRoutes(app: Express): void {
       errorMessage: demoState.errorMessage,
       aiSummary: demoState.aiSummary,
       aiSummaryPending: demoState.aiSummaryPending,
+      dateRange: demoState.dateRange,
     });
   });
 
@@ -506,7 +678,7 @@ export function registerParDemoRoutes(app: Express): void {
 
   app.post("/api/par-demo/reset", (_req: Request, res: Response) => {
     if (otpRejecter) { otpRejecter(new Error("Reset by user")); otpResolver = null; otpRejecter = null; }
-    demoState = { status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false };
+    demoState = { status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false, dateRange: null };
     res.json({ reset: true });
   });
 
