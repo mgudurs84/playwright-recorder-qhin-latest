@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
-  Clock, Monitor, Eye, Zap, Search, Mail, KeyRound,
+  Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
@@ -23,6 +23,8 @@ interface DemoStatusResponse {
   status: DemoStatus;
   steps: PARStep[];
   errorMessage: string | null;
+  aiSummary: string | null;
+  aiSummaryPending: boolean;
 }
 
 const PHASE_META: Record<PARPhase, { border: string; bg: string; text: string; badge: string; icon: typeof Eye }> = {
@@ -84,33 +86,164 @@ function StepCard({ step, index, active }: { step: PARStep; index: number; activ
   );
 }
 
-// OTP entry panel shown when the Playwright script is paused waiting for the code
+// Lightweight markdown renderer — no dependencies
+function SimpleMarkdown({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  const renderInline = (line: string) => {
+    // **bold**, `code`
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((part, pi) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={pi} className="text-foreground font-semibold">{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return <code key={pi} className="bg-muted/50 px-1 rounded text-xs font-mono text-emerald-300">{part.slice(1, -1)}</code>;
+      }
+      return part;
+    });
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Table
+    if (line.includes("|") && lines[i + 1]?.match(/^\s*\|[\s-|]+\|\s*$/)) {
+      const headers = line.split("|").map((h) => h.trim()).filter(Boolean);
+      i += 2; // skip separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|")) {
+        rows.push(lines[i].split("|").map((c) => c.trim()).filter(Boolean));
+        i++;
+      }
+      elements.push(
+        <div key={i} className="overflow-x-auto my-2">
+          <table className="text-xs w-full border-collapse">
+            <thead>
+              <tr>{headers.map((h, hi) => <th key={hi} className="text-left px-2 py-1 border border-border/50 bg-muted/30 text-muted-foreground font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri} className="border-t border-border/30">
+                  {row.map((cell, ci) => <td key={ci} className="px-2 py-1 border border-border/30 text-foreground/80">{cell}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    // Headings
+    if (line.startsWith("### ")) {
+      elements.push(<h3 key={i} className="text-sm font-bold text-foreground mt-3 mb-1 flex items-center gap-1.5">{line.slice(4)}</h3>);
+    } else if (line.startsWith("## ")) {
+      elements.push(<h2 key={i} className="text-sm font-bold text-foreground mt-4 mb-1">{line.slice(3)}</h2>);
+    } else if (line.startsWith("# ")) {
+      elements.push(<h2 key={i} className="text-base font-bold text-foreground mt-4 mb-1">{line.slice(2)}</h2>);
+    // Bullets
+    } else if (line.match(/^[-*] /)) {
+      elements.push(
+        <div key={i} className="flex gap-1.5 text-xs text-muted-foreground leading-relaxed">
+          <span className="text-primary shrink-0 mt-0.5">•</span>
+          <span>{renderInline(line.slice(2))}</span>
+        </div>
+      );
+    // Numbered list
+    } else if (line.match(/^\d+\. /)) {
+      const num = line.match(/^(\d+)\. /)?.[1];
+      elements.push(
+        <div key={i} className="flex gap-1.5 text-xs text-muted-foreground leading-relaxed">
+          <span className="text-primary shrink-0 font-medium w-4">{num}.</span>
+          <span>{renderInline(line.replace(/^\d+\. /, ""))}</span>
+        </div>
+      );
+    // Horizontal rule
+    } else if (line.match(/^---+$/)) {
+      elements.push(<hr key={i} className="border-border/30 my-2" />);
+    // Empty line
+    } else if (line.trim() === "") {
+      elements.push(<div key={i} className="h-1" />);
+    // Normal paragraph
+    } else {
+      elements.push(<p key={i} className="text-xs text-muted-foreground leading-relaxed">{renderInline(line)}</p>);
+    }
+    i++;
+  }
+  return <div className="space-y-0.5">{elements}</div>;
+}
+
+// AI Summary panel
+function AiSummaryPanel({ summary, pending }: { summary: string | null; pending: boolean }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  if (!pending && !summary) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-2xl border border-violet-500/30 bg-violet-500/5 overflow-hidden"
+    >
+      {/* Header */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-violet-500/5 transition-colors"
+      >
+        <div className="w-7 h-7 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center shrink-0">
+          <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-violet-300">Vertex AI — Server Error Analysis</p>
+          <p className="text-xs text-muted-foreground">
+            {pending ? "Gemini 2.5 Flash is analysing…" : "Gemini 2.5 Flash · CDR error summary"}
+          </p>
+        </div>
+        {pending ? (
+          <Loader2 className="w-4 h-4 text-violet-400 animate-spin shrink-0" />
+        ) : (
+          collapsed ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+        )}
+      </button>
+
+      {/* Body */}
+      {!collapsed && (
+        <div className="px-4 pb-4 border-t border-violet-500/15">
+          {pending && (
+            <div className="flex items-center gap-2 py-4">
+              <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />
+              <span className="text-xs text-muted-foreground">Analysing server errors with Gemini 2.5 Flash…</span>
+            </div>
+          )}
+          {summary && (
+            <div className="mt-3">
+              <SimpleMarkdown text={summary} />
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
   const [otp, setOtp] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => { inputRef.current?.focus(); }, []);
-
   const handleSubmit = async () => {
-    if (otp.trim().length === 0) { setErr("Enter the OTP code"); return; }
-    setSubmitting(true);
-    setErr("");
-    try {
-      await onSubmit(otp.trim());
-    } catch (e) {
-      setErr((e as Error).message);
-      setSubmitting(false);
-    }
+    if (!otp.trim()) { setErr("Enter the OTP code"); return; }
+    setSubmitting(true); setErr("");
+    try { await onSubmit(otp.trim()); }
+    catch (e) { setErr((e as Error).message); setSubmitting(false); }
   };
-
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="mx-2 mb-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-4"
-    >
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className="mx-2 mb-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2 mb-3">
         <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0">
           <Mail className="w-4 h-4 text-amber-400" />
@@ -123,22 +256,14 @@ function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
       <div className="flex gap-2">
         <div className="relative flex-1">
           <KeyRound className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-          <input
-            ref={inputRef}
-            type="text"
-            inputMode="numeric"
-            value={otp}
+          <input ref={inputRef} type="text" inputMode="numeric" value={otp}
             onChange={(e) => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 8)); setErr(""); }}
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
             placeholder="Enter OTP code…"
-            className="w-full pl-8 pr-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 tracking-widest font-mono"
-          />
+            className="w-full pl-8 pr-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 tracking-widest font-mono" />
         </div>
-        <button
-          onClick={handleSubmit}
-          disabled={submitting || otp.length === 0}
-          className="px-4 py-2 rounded-lg bg-amber-500 text-black text-xs font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-        >
+        <button onClick={handleSubmit} disabled={submitting || !otp.length}
+          className="px-4 py-2 rounded-lg bg-amber-500 text-black text-xs font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
           {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Submit OTP"}
         </button>
       </div>
@@ -147,49 +272,32 @@ function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
   );
 }
 
-// Double-buffered live browser panel — no flicker
-// Two <img> elements stacked; the hidden one preloads the next frame,
-// then we swap which is visible only after onLoad fires.
+// Double-buffered live browser panel
 function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; lastStepScreenshot: string | null }) {
   const running = status === "running" || status === "otp:waiting";
-
   const [frameA, setFrameA] = useState("");
   const [frameB, setFrameB] = useState("");
-  const [active, setActive] = useState<"A" | "B">("A");  // which frame is visible
+  const [active, setActive] = useState<"A" | "B">("A");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const loadingRef = useRef<"A" | "B">("B"); // which slot is loading next
+  const loadingSlot = useRef<"A" | "B">("B");
 
   useEffect(() => {
     if (running) {
       intervalRef.current = setInterval(() => {
         const url = apiUrl(`/api/par-demo/live?t=${Date.now()}`);
-        // Load into the inactive slot
-        if (loadingRef.current === "A") {
-          setFrameA(url);
-        } else {
-          setFrameB(url);
-        }
+        if (loadingSlot.current === "A") setFrameA(url);
+        else setFrameB(url);
       }, 600);
     } else {
       if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-      if (lastStepScreenshot) {
-        setFrameA(apiUrl(lastStepScreenshot));
-        setFrameB("");
-        setActive("A");
-        loadingRef.current = "B";
-      } else if (status === "idle") {
-        setFrameA(""); setFrameB("");
-      }
+      if (lastStepScreenshot) { setFrameA(apiUrl(lastStepScreenshot)); setFrameB(""); setActive("A"); loadingSlot.current = "B"; }
+      else if (status === "idle") { setFrameA(""); setFrameB(""); }
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [running, status, lastStepScreenshot]);
 
-  const onLoadA = () => {
-    if (loadingRef.current === "A") { setActive("A"); loadingRef.current = "B"; }
-  };
-  const onLoadB = () => {
-    if (loadingRef.current === "B") { setActive("B"); loadingRef.current = "A"; }
-  };
+  const onLoadA = () => { if (loadingSlot.current === "A") { setActive("A"); loadingSlot.current = "B"; } };
+  const onLoadB = () => { if (loadingSlot.current === "B") { setActive("B"); loadingSlot.current = "A"; } };
 
   return (
     <div className="flex flex-col h-full">
@@ -216,9 +324,8 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
         )}
       </div>
 
-      {/* Viewport — double-buffered */}
+      {/* Viewport */}
       <div className="flex-1 relative bg-zinc-950 overflow-hidden">
-        {/* Placeholder when idle and no frames */}
         {status === "idle" && !frameA && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center px-6">
             <div className="w-12 h-12 rounded-xl bg-card/50 border border-border flex items-center justify-center">
@@ -232,29 +339,16 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
             </div>
           </div>
         )}
-
-        {/* Frame A */}
         {frameA && (
-          <img
-            src={frameA}
-            alt="Playwright live view"
-            onLoad={onLoadA}
+          <img src={frameA} alt="Playwright live view" onLoad={onLoadA}
             className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
-            style={{ opacity: active === "A" ? 1 : 0 }}
-          />
+            style={{ opacity: active === "A" ? 1 : 0 }} />
         )}
-        {/* Frame B */}
         {frameB && (
-          <img
-            src={frameB}
-            alt="Playwright live view"
-            onLoad={onLoadB}
+          <img src={frameB} alt="Playwright live view" onLoad={onLoadB}
             className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-150"
-            style={{ opacity: active === "B" ? 1 : 0 }}
-          />
+            style={{ opacity: active === "B" ? 1 : 0 }} />
         )}
-
-        {/* LIVE badge overlay */}
         {status === "running" && (
           <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-emerald-500/30 rounded-lg px-2.5 py-1 pointer-events-none">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -286,8 +380,16 @@ async function fetchImageAsDataUri(url: string): Promise<string | null> {
   } catch { return null; }
 }
 
-async function generateHtmlReport(steps: PARStep[]): Promise<string> {
+async function generateHtmlReport(steps: PARStep[], aiSummary: string | null): Promise<string> {
   const phaseColor: Record<PARPhase, string> = { PERCEIVE: "#3b82f6", ACT: "#f97316", REVIEW: "#10b981" };
+  const summaryHtml = aiSummary
+    ? `<div style="background:#1e1333;border:1px solid #7c3aed40;border-radius:12px;padding:20px;margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span style="font-size:16px">✨</span>
+          <strong style="color:#c4b5fd">Vertex AI — Server Error Analysis</strong>
+        </div>
+        <pre style="color:#d4d4d8;font-size:12px;white-space:pre-wrap;font-family:system-ui">${aiSummary.replace(/</g, "&lt;")}</pre>
+      </div>` : "";
   const rows = (await Promise.all(steps.map(async (s) => {
     const color = phaseColor[s.phase];
     const assertion = s.assertionPassed === null ? "" : s.assertionPassed
@@ -314,18 +416,22 @@ h1{font-size:22px;margin-bottom:4px}.meta{color:#6b7280;font-size:13px;margin-bo
 .sum{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}.chip{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px 14px;font-size:13px}
 .chip span{font-weight:700;font-size:16px;display:block}</style></head><body>
 <h1>PAR Loop Demo — CommonWell CDR Observability</h1>
-<p class="meta">Generated ${new Date().toLocaleString()} · Playwright portal visualiser · Screenshots embedded (offline-safe)</p>
+<p class="meta">Generated ${new Date().toLocaleString()} · Playwright portal visualiser</p>
 <div class="sum">
-  <div class="chip"><span>${steps.length}</span>Total Steps</div>
+  <div class="chip"><span>${steps.length}</span>Steps</div>
   <div class="chip"><span style="color:#3b82f6">${steps.filter((s) => s.phase === "PERCEIVE").length}</span>PERCEIVE</div>
   <div class="chip"><span style="color:#f97316">${steps.filter((s) => s.phase === "ACT").length}</span>ACT</div>
   <div class="chip"><span style="color:#10b981">${steps.filter((s) => s.phase === "REVIEW").length}</span>REVIEW</div>
-  <div class="chip"><span style="color:#10b981">${pc}/${pc + fc}</span>Assertions Passed</div>
-</div>${rows}</body></html>`;
+  <div class="chip"><span style="color:#10b981">${pc}/${pc + fc}</span>Passed</div>
+</div>
+${summaryHtml}
+${rows}</body></html>`;
 }
 
 export default function ParDemo() {
-  const [demoState, setDemoState] = useState<DemoStatusResponse>({ status: "idle", steps: [], errorMessage: null });
+  const [demoState, setDemoState] = useState<DemoStatusResponse>({
+    status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false,
+  });
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stepsEndRef = useRef<HTMLDivElement>(null);
 
@@ -353,8 +459,7 @@ export default function ParDemo() {
         if (!data || !Array.isArray(data.steps)) return;
         setDemoState(data);
         if (data.status === "running" || data.status === "otp:waiting") startPolling();
-      })
-      .catch(() => {});
+      }).catch(() => {});
     return stopPolling;
   }, [startPolling, stopPolling]);
 
@@ -370,7 +475,7 @@ export default function ParDemo() {
         setDemoState((p) => ({ ...p, status: "error", errorMessage: err.error ?? "Failed to start" }));
         return;
       }
-      setDemoState({ status: "running", steps: [], errorMessage: null });
+      setDemoState({ status: "running", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false });
       startPolling();
     } catch (err) {
       setDemoState((p) => ({ ...p, status: "error", errorMessage: (err as Error).message }));
@@ -380,24 +485,18 @@ export default function ParDemo() {
   const handleReset = useCallback(async () => {
     stopPolling();
     await fetch(apiUrl("/api/par-demo/reset"), { method: "POST" }).catch(() => {});
-    setDemoState({ status: "idle", steps: [], errorMessage: null });
+    setDemoState({ status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false });
   }, [stopPolling]);
 
   const handleOtpSubmit = useCallback(async (otp: string) => {
     const res = await fetch(apiUrl("/api/par-demo/otp"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ otp }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ otp }),
     });
-    if (!res.ok) {
-      const err = await res.json() as { error?: string };
-      throw new Error(err.error ?? "Failed to submit OTP");
-    }
-    // Status will flip back to "running" — polling picks it up automatically
+    if (!res.ok) { const err = await res.json() as { error?: string }; throw new Error(err.error ?? "Failed"); }
   }, []);
 
   const handleDownload = useCallback(async () => {
-    const html = await generateHtmlReport(demoState.steps);
+    const html = await generateHtmlReport(demoState.steps, demoState.aiSummary);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -405,9 +504,9 @@ export default function ParDemo() {
     a.download = `par-demo-cw-${new Date().toISOString().replace(/[:.]/g, "-")}.html`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [demoState.steps]);
+  }, [demoState.steps, demoState.aiSummary]);
 
-  const { status, steps, errorMessage } = demoState;
+  const { status, steps, errorMessage, aiSummary, aiSummaryPending } = demoState;
   const running = status === "running";
   const otpWaiting = status === "otp:waiting";
   const complete = status === "complete";
@@ -422,13 +521,13 @@ export default function ParDemo() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      {/* Top bar */}
       <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0 gap-3">
         <div className="shrink-0">
           <h1 className="text-base font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
             <span className="text-primary">PAR</span> Loop Demo
           </h1>
-          <p className="text-xs text-muted-foreground">CommonWell Portal · Perceive → Act → Review</p>
+          <p className="text-xs text-muted-foreground">CommonWell Portal · Server Errors · Vertex AI</p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {(["PERCEIVE", "ACT", "REVIEW"] as PARPhase[]).map((p) => <PhaseBadge key={p} phase={p} />)}
@@ -440,8 +539,7 @@ export default function ParDemo() {
             </button>
           )}
           {active && (
-            <button disabled
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
+            <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
               <Loader2 className="w-3 h-3 animate-spin" />{otpWaiting ? "Waiting…" : "Running…"}
             </button>
           )}
@@ -460,7 +558,7 @@ export default function ParDemo() {
         </div>
       </div>
 
-      {/* ── Status banners ───────────────────────────────────────────────── */}
+      {/* Status banners */}
       <AnimatePresence>
         {hasError && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
@@ -479,10 +577,10 @@ export default function ParDemo() {
         )}
       </AnimatePresence>
 
-      {/* ── Split panel ──────────────────────────────────────────────────── */}
+      {/* Split panel */}
       <div className="flex flex-1 overflow-hidden gap-2.5 px-4 pb-4 pt-1">
 
-        {/* LEFT — step timeline + OTP panel */}
+        {/* LEFT — step timeline + OTP + AI summary */}
         <div className="w-[42%] shrink-0 flex flex-col overflow-hidden rounded-2xl border border-border bg-card/20">
           <div className="px-3 py-2 border-b border-border shrink-0 flex items-center justify-between">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -490,14 +588,11 @@ export default function ParDemo() {
             </p>
             {steps.length > 0 && (
               <p className="text-xs text-muted-foreground/60">
-                {steps.filter((s) => s.phase === "PERCEIVE").length}P ·{" "}
-                {steps.filter((s) => s.phase === "ACT").length}A ·{" "}
-                {steps.filter((s) => s.phase === "REVIEW").length}R
+                {steps.filter((s) => s.phase === "PERCEIVE").length}P · {steps.filter((s) => s.phase === "ACT").length}A · {steps.filter((s) => s.phase === "REVIEW").length}R
               </p>
             )}
           </div>
 
-          {/* OTP entry — shown above timeline when waiting */}
           <AnimatePresence>
             {otpWaiting && <OtpPanel onSubmit={handleOtpSubmit} />}
           </AnimatePresence>
@@ -507,7 +602,9 @@ export default function ParDemo() {
               <div className="flex flex-col items-center justify-center h-full text-center py-8 px-4">
                 <Play className="w-7 h-7 text-muted-foreground/30 mb-3" />
                 <p className="text-xs text-muted-foreground">Click Run PAR Demo to start</p>
-                <p className="text-xs text-muted-foreground/50 mt-1">Requires CW_USERNAME and CW_PASSWORD env vars</p>
+                <p className="text-xs text-muted-foreground/50 mt-1">
+                  Logs in → navigates to Transaction Logs → finds Server Errors → Vertex AI summary
+                </p>
               </div>
             )}
             {steps.map((step, i) => (
@@ -519,6 +616,12 @@ export default function ParDemo() {
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />Running next step…
               </motion.div>
             )}
+
+            {/* AI Summary — appears inline after steps complete */}
+            {(aiSummaryPending || aiSummary) && (
+              <AiSummaryPanel summary={aiSummary} pending={aiSummaryPending} />
+            )}
+
             <div ref={stepsEndRef} />
           </div>
         </div>
