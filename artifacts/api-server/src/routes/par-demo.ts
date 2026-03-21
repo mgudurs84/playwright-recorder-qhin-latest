@@ -83,8 +83,10 @@ async function extractAllPagesContent(page: Page): Promise<{ text: string; rowCo
   const MAX_PAGES = 20;
   const allParts: string[] = [];
   let totalRows = 0;
+  let visitedPages = 0; // explicit counter — allParts.length can undercount when a page has no rows
 
   for (let p = 1; p <= MAX_PAGES; p++) {
+    visitedPages = p;
     const { text, rowCount } = await extractPageContent(page);
 
     if (p === 1) {
@@ -131,7 +133,7 @@ async function extractAllPagesContent(page: Page): Promise<{ text: string; rowCo
     await page.waitForTimeout(2000);
   }
 
-  return { text: allParts.join("\n"), rowCount: totalRows, pageCount: allParts.length };
+  return { text: allParts.join("\n"), rowCount: totalRows, pageCount: visitedPages };
 }
 
 // ── Date range filter injection ──────────────────────────────────────────────
@@ -166,12 +168,16 @@ async function applyDateRangeFilter(page: Page, dateFrom: string, dateTo: string
   for (const sel of fromSelectors) {
     const el = page.locator(sel).first();
     if ((await el.count()) > 0 && (await el.isVisible({ timeout: 1000 }).catch(() => false))) {
-      await el.click({ clickCount: 3 }).catch(() => {});
-      await el.fill(fromFormatted).catch(() => {});
-      await page.keyboard.press("Tab");
-      fromFilled = true;
-      console.log(`[PAR Demo] From Date set via: ${sel}`);
-      break;
+      try {
+        await el.click({ clickCount: 3 });
+        await el.fill(fromFormatted);
+        await page.keyboard.press("Tab");
+        fromFilled = true;
+        console.log(`[PAR Demo] From Date set via: ${sel}`);
+      } catch (e) {
+        console.warn(`[PAR Demo] From Date fill failed via: ${sel} — ${(e as Error).message}`);
+      }
+      break; // only attempt one selector
     }
   }
 
@@ -179,12 +185,16 @@ async function applyDateRangeFilter(page: Page, dateFrom: string, dateTo: string
   for (const sel of toSelectors) {
     const el = page.locator(sel).first();
     if ((await el.count()) > 0 && (await el.isVisible({ timeout: 1000 }).catch(() => false))) {
-      await el.click({ clickCount: 3 }).catch(() => {});
-      await el.fill(toFormatted).catch(() => {});
-      await page.keyboard.press("Tab");
-      toFilled = true;
-      console.log(`[PAR Demo] To Date set via: ${sel}`);
-      break;
+      try {
+        await el.click({ clickCount: 3 });
+        await el.fill(toFormatted);
+        await page.keyboard.press("Tab");
+        toFilled = true;
+        console.log(`[PAR Demo] To Date set via: ${sel}`);
+      } catch (e) {
+        console.warn(`[PAR Demo] To Date fill failed via: ${sel} — ${(e as Error).message}`);
+      }
+      break; // only attempt one selector
     }
   }
 
