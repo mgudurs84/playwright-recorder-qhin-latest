@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import router from "./routes";
 import { registerCwRunnerRoutes } from "./routes/cw-runner";
+import { registerParDemoRoutes } from "./routes/par-demo";
 
 const app: Express = express();
 
@@ -24,6 +25,7 @@ app.use("/api/screenshots", express.static(SCREENSHOTS_DIR, {
 }));
 
 registerCwRunnerRoutes(app);
+registerParDemoRoutes(app);
 
 app.use("/api", router);
 
