@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
   Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles,
-  AlertTriangle, BarChart3, Building2, Lightbulb, ArrowRight,
+  AlertTriangle, BarChart3, Building2, Lightbulb, ArrowRight, Camera, X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
@@ -57,14 +57,30 @@ function AssertionChip({ passed }: { passed: boolean | null }) {
   );
 }
 
-function StepCard({ step, index, active }: { step: PARStep; index: number; active: boolean }) {
+function StepCard({
+  step, index, active, selected, onSelect,
+}: {
+  step: PARStep;
+  index: number;
+  active: boolean;
+  selected: boolean;
+  onSelect: ((id: number) => void) | null;
+}) {
   const m = PHASE_META[step.phase];
+  const clickable = !!step.screenshotUrl && !!onSelect;
   return (
     <motion.div
       initial={{ opacity: 0, x: -12 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.22, delay: index * 0.03 }}
-      className={`rounded-xl border ${m.border} ${m.bg} p-3 ${active ? "ring-1 ring-primary/40" : ""}`}
+      onClick={clickable ? () => onSelect(step.id) : undefined}
+      className={[
+        "rounded-xl border p-3 transition-all",
+        m.border, m.bg,
+        active ? "ring-1 ring-primary/40" : "",
+        selected ? "ring-2 ring-primary shadow-[0_0_0_2px_hsl(var(--primary)/0.25)]" : "",
+        clickable ? "cursor-pointer hover:brightness-110" : "cursor-default",
+      ].join(" ")}
     >
       <div className="flex items-start gap-2.5">
         <div className={`w-5 h-5 rounded-full border ${m.border} ${m.bg} flex items-center justify-center shrink-0 mt-0.5`}>
@@ -75,6 +91,9 @@ function StepCard({ step, index, active }: { step: PARStep; index: number; activ
             <PhaseBadge phase={step.phase} />
             <span className="text-xs font-semibold text-foreground truncate">{step.label}</span>
             <AssertionChip passed={step.assertionPassed} />
+            {step.screenshotUrl && (
+              <Camera className={`w-3 h-3 ml-auto shrink-0 ${selected ? "text-primary" : "text-muted-foreground/50"}`} />
+            )}
           </div>
           <p className="text-xs text-muted-foreground leading-snug">{step.description}</p>
           <p className="text-xs text-muted-foreground/40 mt-0.5">
@@ -288,7 +307,15 @@ function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
 }
 
 // Double-buffered live browser panel
-function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; lastStepScreenshot: string | null }) {
+function LiveBrowserPanel({
+  status, lastStepScreenshot, pinnedUrl, pinnedStepId, onClearPin,
+}: {
+  status: DemoStatus;
+  lastStepScreenshot: string | null;
+  pinnedUrl: string | null;
+  pinnedStepId: number | null;
+  onClearPin: () => void;
+}) {
   const running = status === "running" || status === "otp:waiting";
   const [frameA, setFrameA] = useState("");
   const [frameB, setFrameB] = useState("");
@@ -297,6 +324,11 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
   const loadingSlot = useRef<"A" | "B">("B");
 
   useEffect(() => {
+    if (pinnedUrl) {
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      setFrameA(apiUrl(pinnedUrl)); setFrameB(""); setActive("A"); loadingSlot.current = "B";
+      return;
+    }
     if (running) {
       intervalRef.current = setInterval(() => {
         const url = apiUrl(`/api/par-demo/live?t=${Date.now()}`);
@@ -309,7 +341,7 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
       else if (status === "idle") { setFrameA(""); setFrameB(""); }
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [running, status, lastStepScreenshot]);
+  }, [running, status, lastStepScreenshot, pinnedUrl]);
 
   const onLoadA = () => { if (loadingSlot.current === "A") { setActive("A"); loadingSlot.current = "B"; } };
   const onLoadB = () => { if (loadingSlot.current === "B") { setActive("B"); loadingSlot.current = "A"; } };
@@ -327,12 +359,23 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
           <Monitor className="w-3 h-3 text-muted-foreground shrink-0" />
           <span className="text-xs text-muted-foreground truncate font-mono">integration.commonwellalliance.lkopera.com</span>
         </div>
-        {status === "running" && (
+        {pinnedStepId !== null && (
+          <button
+            onClick={onClearPin}
+            className="flex items-center gap-1 text-xs text-primary shrink-0 font-medium px-2 py-0.5 rounded-md bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-colors"
+          >
+            <Camera className="w-3 h-3" />
+            Viewing step {pinnedStepId}
+            <X className="w-3 h-3 ml-0.5" />
+            Live
+          </button>
+        )}
+        {pinnedStepId === null && status === "running" && (
           <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0 font-medium">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />LIVE
           </span>
         )}
-        {status === "otp:waiting" && (
+        {pinnedStepId === null && status === "otp:waiting" && (
           <span className="flex items-center gap-1 text-xs text-amber-400 shrink-0 font-medium">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />PAUSED
           </span>
@@ -364,13 +407,19 @@ function LiveBrowserPanel({ status, lastStepScreenshot }: { status: DemoStatus; 
             className="absolute inset-0 w-full h-full object-contain object-top"
             style={{ opacity: active === "B" ? 1 : 0 }} />
         )}
-        {status === "running" && (
+        {pinnedStepId !== null && (
+          <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-primary/30 rounded-lg px-2.5 py-1 pointer-events-none">
+            <Camera className="w-3 h-3 text-primary" />
+            <span className="text-xs text-primary font-medium">Step {pinnedStepId}</span>
+          </div>
+        )}
+        {pinnedStepId === null && status === "running" && (
           <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-emerald-500/30 rounded-lg px-2.5 py-1 pointer-events-none">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs text-emerald-300 font-medium">Playwright · Live</span>
           </div>
         )}
-        {status === "otp:waiting" && (
+        {pinnedStepId === null && status === "otp:waiting" && (
           <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-amber-500/30 rounded-lg px-2.5 py-1 pointer-events-none">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
             <span className="text-xs text-amber-300 font-medium">Waiting for OTP</span>
@@ -447,6 +496,7 @@ export default function ParDemo() {
   const [demoState, setDemoState] = useState<DemoStatusResponse>({
     status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false,
   });
+  const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stepsEndRef = useRef<HTMLDivElement>(null);
 
@@ -483,6 +533,7 @@ export default function ParDemo() {
   }, [demoState.steps?.length]);
 
   const handleRun = useCallback(async () => {
+    setSelectedStepId(null);
     try {
       const res = await fetch(apiUrl("/api/par-demo/run"), { method: "POST" });
       if (!res.ok) {
@@ -499,9 +550,14 @@ export default function ParDemo() {
 
   const handleReset = useCallback(async () => {
     stopPolling();
+    setSelectedStepId(null);
     await fetch(apiUrl("/api/par-demo/reset"), { method: "POST" }).catch(() => {});
     setDemoState({ status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false });
   }, [stopPolling]);
+
+  const handleSelectStep = useCallback((id: number) => {
+    setSelectedStepId((prev) => (prev === id ? null : id));
+  }, []);
 
   const handleOtpSubmit = useCallback(async (otp: string) => {
     const res = await fetch(apiUrl("/api/par-demo/otp"), {
@@ -532,6 +588,9 @@ export default function ParDemo() {
   const passCount = steps.filter((s) => s.assertionPassed === true).length;
   const failCount = steps.filter((s) => s.assertionPassed === false).length;
   const lastScreenshot = [...steps].reverse().find((s) => s.screenshotUrl)?.screenshotUrl ?? null;
+
+  const pinnedStep = selectedStepId !== null ? steps.find((s) => s.id === selectedStepId) ?? null : null;
+  const pinnedUrl = pinnedStep?.screenshotUrl ?? null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -623,7 +682,14 @@ export default function ParDemo() {
               </div>
             )}
             {steps.map((step, i) => (
-              <StepCard key={step.id} step={step} index={i} active={active && i === steps.length - 1} />
+              <StepCard
+                key={step.id}
+                step={step}
+                index={i}
+                active={active && i === steps.length - 1}
+                selected={selectedStepId === step.id}
+                onSelect={handleSelectStep}
+              />
             ))}
             {running && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -643,7 +709,13 @@ export default function ParDemo() {
 
         {/* RIGHT — live browser */}
         <div className="flex-1 overflow-hidden rounded-2xl border border-border bg-zinc-950">
-          <LiveBrowserPanel status={status} lastStepScreenshot={lastScreenshot} />
+          <LiveBrowserPanel
+            status={status}
+            lastStepScreenshot={lastScreenshot}
+            pinnedUrl={pinnedUrl}
+            pinnedStepId={pinnedStep?.id ?? null}
+            onClearPin={() => setSelectedStepId(null)}
+          />
         </div>
       </div>
     </div>
