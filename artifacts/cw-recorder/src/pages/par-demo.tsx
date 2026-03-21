@@ -3,12 +3,20 @@ import {
   Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
   Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles,
   AlertTriangle, BarChart3, Building2, Lightbulb, ArrowRight, Camera, X,
+  Calendar, CalendarDays, FileText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
 
 type PARPhase = "PERCEIVE" | "ACT" | "REVIEW";
 type DemoStatus = "idle" | "running" | "otp:waiting" | "complete" | "error";
+type DatePreset = "24h" | "7d" | "30d" | "custom";
+
+interface DateRange {
+  preset: DatePreset;
+  dateFrom: string; // ISO YYYY-MM-DD
+  dateTo: string;   // ISO YYYY-MM-DD
+}
 
 interface PARStep {
   id: number;
@@ -26,6 +34,7 @@ interface DemoStatusResponse {
   errorMessage: string | null;
   aiSummary: string | null;
   aiSummaryPending: boolean;
+  dateRange?: { dateFrom: string; dateTo: string } | null;
 }
 
 const PHASE_META: Record<PARPhase, { border: string; bg: string; text: string; badge: string; icon: typeof Eye }> = {
@@ -306,6 +315,263 @@ function OtpPanel({ onSubmit }: { onSubmit: (otp: string) => Promise<void> }) {
   );
 }
 
+// ── Date range helpers ────────────────────────────────────────────────────────
+function todayIso(): string { return new Date().toISOString().split("T")[0]; }
+function daysAgoIso(days: number): string {
+  const d = new Date(); d.setDate(d.getDate() - days);
+  return d.toISOString().split("T")[0];
+}
+function getPresetRange(preset: Exclude<DatePreset, "custom">): { dateFrom: string; dateTo: string } {
+  const today = todayIso();
+  if (preset === "24h") return { dateFrom: daysAgoIso(1), dateTo: today };
+  if (preset === "7d")  return { dateFrom: daysAgoIso(7), dateTo: today };
+  return                       { dateFrom: daysAgoIso(30), dateTo: today };
+}
+const PRESET_LABELS: Record<DatePreset, string> = {
+  "24h": "Last 24h", "7d": "Last 7 days", "30d": "Last 30 days", "custom": "Custom",
+};
+
+function DateRangePicker({ value, onChange }: {
+  value: DateRange;
+  onChange: (v: DateRange) => void;
+}) {
+  const presets: DatePreset[] = ["24h", "7d", "30d", "custom"];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1 flex-wrap">
+        <CalendarDays className="w-3 h-3 text-muted-foreground shrink-0" />
+        {presets.map((p) => (
+          <button
+            key={p}
+            onClick={() => {
+              if (p === "custom") {
+                onChange({ preset: "custom", dateFrom: daysAgoIso(7), dateTo: todayIso() });
+              } else {
+                onChange({ preset: p, ...getPresetRange(p) });
+              }
+            }}
+            className={[
+              "px-2 py-0.5 rounded-md text-xs font-medium border transition-colors",
+              value.preset === p
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-secondary/40 text-muted-foreground border-border hover:bg-secondary hover:text-foreground",
+            ].join(" ")}
+          >
+            {PRESET_LABELS[p]}
+          </button>
+        ))}
+      </div>
+      {value.preset === "custom" && (
+        <div className="flex items-center gap-1.5">
+          <Calendar className="w-3 h-3 text-muted-foreground shrink-0" />
+          <input
+            type="date"
+            value={value.dateFrom}
+            max={value.dateTo}
+            onChange={(e) => onChange({ ...value, dateFrom: e.target.value })}
+            className="h-6 px-2 rounded border border-border bg-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+          />
+          <span className="text-xs text-muted-foreground">→</span>
+          <input
+            type="date"
+            value={value.dateTo}
+            min={value.dateFrom}
+            max={todayIso()}
+            onChange={(e) => onChange({ ...value, dateTo: e.target.value })}
+            className="h-6 px-2 rounded border border-border bg-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PDF report generator ──────────────────────────────────────────────────────
+const PHASE_COLORS_RGB: Record<PARPhase, [number, number, number]> = {
+  PERCEIVE: [59, 130, 246],
+  ACT:      [249, 115, 22],
+  REVIEW:   [16, 185, 129],
+};
+
+async function generatePdfReport(
+  steps: PARStep[],
+  aiSummary: string | null,
+  dateRange: DateRange | null,
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+
+  const doc = new jsPDF({ orientation: "p", unit: "mm", format: "a4" });
+  const PW = 210; // page width mm
+  const PH = 297; // page height mm
+  const ML = 15;  // left margin
+  const MR = 15;  // right margin
+  const MT = 18;  // top margin
+  const MB = 18;  // bottom margin
+  const CW = PW - ML - MR; // content width
+
+  let y = MT;
+
+  const addFooters = () => {
+    // jsPDF 2.x exposes page count via internal API
+    const total: number = (doc.internal as unknown as { getNumberOfPages(): number }).getNumberOfPages?.() ?? 1;
+    for (let p = 1; p <= total; p++) {
+      doc.setPage(p);
+      doc.setFontSize(7); doc.setTextColor(160, 160, 160); doc.setFont("helvetica", "normal");
+      doc.text("PAR Loop Demo — CommonWell CDR Observability", ML, PH - 8);
+      doc.text(`Page ${p} / ${total}`, PW - MR, PH - 8, { align: "right" });
+    }
+  };
+
+  const newPage = () => { doc.addPage(); y = MT; };
+  const spaceLeft = () => PH - MB - y;
+  const ensureSpace = (needed: number) => { if (spaceLeft() < needed) newPage(); };
+
+  // ── Cover: red accent bar ─────────────────────────────────────────────────
+  doc.setFillColor(204, 0, 0);
+  doc.rect(ML, y, CW, 1.2, "F");
+  y += 5;
+
+  doc.setFont("helvetica", "bold"); doc.setFontSize(22); doc.setTextColor(204, 0, 0);
+  doc.text("PAR Loop Demo", ML, y);
+  y += 8;
+
+  doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(70, 70, 70);
+  doc.text("CommonWell CDR Observability — Server Error Analysis", ML, y);
+  y += 5.5;
+
+  doc.setFontSize(8.5); doc.setTextColor(120, 120, 120);
+  doc.text(`Generated: ${new Date().toLocaleString()}`, ML, y);
+  y += 4;
+
+  if (dateRange) {
+    const label = dateRange.preset === "custom"
+      ? `${dateRange.dateFrom} → ${dateRange.dateTo}`
+      : PRESET_LABELS[dateRange.preset];
+    doc.text(`Date Range: ${label}`, ML, y);
+    y += 4;
+  }
+
+  // Separator
+  y += 3;
+  doc.setDrawColor(210, 210, 210);
+  doc.line(ML, y, PW - MR, y);
+  y += 6;
+
+  // Stat chips
+  const pc = steps.filter((s) => s.assertionPassed === true).length;
+  const fc = steps.filter((s) => s.assertionPassed === false).length;
+  const stats: { label: string; value: string; color: [number, number, number] }[] = [
+    { label: "Total Steps", value: `${steps.length}`,    color: [100, 116, 139] },
+    { label: "PERCEIVE",    value: `${steps.filter((s) => s.phase === "PERCEIVE").length}`, color: [59, 130, 246] },
+    { label: "ACT",         value: `${steps.filter((s) => s.phase === "ACT").length}`,      color: [249, 115, 22] },
+    { label: "REVIEW",      value: `${steps.filter((s) => s.phase === "REVIEW").length}`,   color: [16, 185, 129] },
+    { label: "Passed",      value: `${pc}/${pc + fc}`,   color: [16, 185, 129] },
+  ];
+  const chipW = (CW - (stats.length - 1) * 2) / stats.length;
+  stats.forEach(({ label, value, color }, i) => {
+    const cx = ML + i * (chipW + 2);
+    doc.setFillColor(color[0], color[1], color[2]);
+    doc.rect(cx, y, chipW, 13, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(11); doc.setFont("helvetica", "bold");
+    doc.text(value, cx + chipW / 2, y + 6, { align: "center" });
+    doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
+    doc.text(label, cx + chipW / 2, y + 10.5, { align: "center" });
+  });
+  y += 18;
+
+  // ── AI Summary ────────────────────────────────────────────────────────────
+  if (aiSummary) {
+    ensureSpace(20);
+    doc.setFillColor(15, 10, 40);
+    doc.rect(ML, y, CW, 9, "F");
+    doc.setTextColor(196, 181, 253); doc.setFontSize(9.5); doc.setFont("helvetica", "bold");
+    doc.text("Vertex AI — Server Error Analysis (Gemini 2.5 Flash)", ML + 3, y + 6);
+    y += 12;
+
+    // Strip markdown headings and bold markers; keep plain text
+    const plainSummary = aiSummary
+      .replace(/^#{1,3}\s+/gm, "")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1");
+
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(55, 55, 65);
+    const lines = doc.splitTextToSize(plainSummary, CW - 2);
+    for (const line of lines) {
+      ensureSpace(5);
+      doc.text(line, ML + 2, y);
+      y += 4;
+    }
+    y += 4;
+  }
+
+  // ── Steps ─────────────────────────────────────────────────────────────────
+  ensureSpace(16);
+  doc.setDrawColor(200, 200, 200); doc.line(ML, y, PW - MR, y); y += 5;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(30, 30, 30);
+  doc.text("Execution Steps", ML, y);
+  y += 7;
+
+  for (const step of steps) {
+    ensureSpace(22);
+    const [r, g, b] = PHASE_COLORS_RGB[step.phase];
+
+    // Left accent bar
+    doc.setFillColor(r, g, b); doc.rect(ML, y, 2, 11, "F");
+
+    // Phase tag
+    doc.setFillColor(r, g, b); doc.setTextColor(255, 255, 255);
+    doc.setFontSize(7); doc.setFont("helvetica", "bold");
+    doc.text(step.phase, ML + 4, y + 4.5);
+
+    // Label
+    doc.setTextColor(15, 15, 15); doc.setFontSize(9.5);
+    doc.text(`${step.id}. ${step.label}`, ML + 22, y + 4.5);
+
+    // Assertion chip (right-aligned)
+    if (step.assertionPassed !== null) {
+      const [ar, ag, ab]: [number, number, number] = step.assertionPassed ? [16, 185, 129] : [239, 68, 68];
+      doc.setTextColor(ar, ag, ab); doc.setFontSize(7); doc.setFont("helvetica", "bold");
+      doc.text(step.assertionPassed ? "PASS" : "FAIL", PW - MR, y + 4.5, { align: "right" });
+    }
+
+    // Timestamp
+    doc.setTextColor(140, 140, 140); doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
+    doc.text(new Date(step.timestamp).toLocaleTimeString(), PW - MR, y + 9.5, { align: "right" });
+    y += 13;
+
+    // Description
+    doc.setTextColor(70, 70, 80); doc.setFontSize(8);
+    const descLines = doc.splitTextToSize(step.description, CW - 5);
+    for (const line of descLines) { ensureSpace(5); doc.text(line, ML + 4, y); y += 4; }
+    y += 2;
+
+    // Screenshot
+    if (step.screenshotUrl) {
+      const imgData = await fetchImageAsDataUri(apiUrl(step.screenshotUrl));
+      if (imgData) {
+        const imgW = Math.min(CW - 4, 130);
+        const imgH = Math.round(imgW * 9 / 16);
+        ensureSpace(imgH + 6);
+        try {
+          const fmt = imgData.startsWith("data:image/png") ? "PNG" : "JPEG";
+          doc.addImage(imgData, fmt, ML + 4, y, imgW, imgH);
+          y += imgH + 5;
+        } catch { /* skip unloadable image */ }
+      }
+    }
+
+    // Step separator
+    ensureSpace(5);
+    doc.setDrawColor(230, 230, 230); doc.line(ML, y, PW - MR, y);
+    y += 5;
+  }
+
+  addFooters();
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  doc.save(`par-demo-cw-${ts}.pdf`);
+}
+
 // Double-buffered live browser panel
 function LiveBrowserPanel({
   status, lastStepScreenshot, pinnedUrl, pinnedStepId, onClearPin,
@@ -492,11 +758,14 @@ ${summaryHtml}
 ${rows}</body></html>`;
 }
 
+const DEFAULT_DATE_RANGE: DateRange = { preset: "7d", ...getPresetRange("7d") };
+
 export default function ParDemo() {
   const [demoState, setDemoState] = useState<DemoStatusResponse>({
     status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false,
   });
   const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
+  const [dateRange, setDateRange] = useState<DateRange>(DEFAULT_DATE_RANGE);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stepsEndRef = useRef<HTMLDivElement>(null);
 
@@ -535,7 +804,14 @@ export default function ParDemo() {
   const handleRun = useCallback(async () => {
     setSelectedStepId(null);
     try {
-      const res = await fetch(apiUrl("/api/par-demo/run"), { method: "POST" });
+      const body: Record<string, string> = {};
+      if (dateRange.dateFrom) body.dateFrom = dateRange.dateFrom;
+      if (dateRange.dateTo)   body.dateTo   = dateRange.dateTo;
+      const res = await fetch(apiUrl("/api/par-demo/run"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       if (!res.ok) {
         const err = await res.json() as { error?: string };
         setDemoState((p) => ({ ...p, status: "error", errorMessage: err.error ?? "Failed to start" }));
@@ -546,7 +822,7 @@ export default function ParDemo() {
     } catch (err) {
       setDemoState((p) => ({ ...p, status: "error", errorMessage: (err as Error).message }));
     }
-  }, [startPolling]);
+  }, [startPolling, dateRange]);
 
   const handleReset = useCallback(async () => {
     stopPolling();
@@ -566,7 +842,17 @@ export default function ParDemo() {
     if (!res.ok) { const err = await res.json() as { error?: string }; throw new Error(err.error ?? "Failed"); }
   }, []);
 
-  const handleDownload = useCallback(async () => {
+  const [pdfGenerating, setPdfGenerating] = useState(false);
+  const handleDownloadPdf = useCallback(async () => {
+    setPdfGenerating(true);
+    try {
+      await generatePdfReport(demoState.steps, demoState.aiSummary, dateRange);
+    } finally {
+      setPdfGenerating(false);
+    }
+  }, [demoState.steps, demoState.aiSummary, dateRange]);
+
+  const handleDownloadHtml = useCallback(async () => {
     const html = await generateHtmlReport(demoState.steps, demoState.aiSummary);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
@@ -596,40 +882,56 @@ export default function ParDemo() {
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0 gap-3">
-        <div className="shrink-0">
-          <h1 className="text-base font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
-            <span className="text-primary">PAR</span> Loop Demo
-          </h1>
-          <p className="text-xs text-muted-foreground">CommonWell Portal · Server Errors · Vertex AI</p>
+      <div className="flex flex-col gap-1.5 px-4 pt-3 pb-2 shrink-0">
+        <div className="flex items-center justify-between gap-3">
+          <div className="shrink-0">
+            <h1 className="text-base font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
+              <span className="text-primary">PAR</span> Loop Demo
+            </h1>
+            <p className="text-xs text-muted-foreground">CommonWell Portal · Server Errors · Vertex AI</p>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            {(["PERCEIVE", "ACT", "REVIEW"] as PARPhase[]).map((p) => <PhaseBadge key={p} phase={p} />)}
+            <div className="w-px h-4 bg-border mx-0.5" />
+            {(idle || complete || hasError) && (
+              <button onClick={handleRun}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
+                <Play className="w-3 h-3" />{idle ? "Run PAR Demo" : "Run Again"}
+              </button>
+            )}
+            {active && (
+              <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
+                <Loader2 className="w-3 h-3 animate-spin" />{otpWaiting ? "Waiting…" : "Running…"}
+              </button>
+            )}
+            {complete && steps.length > 0 && (
+              <>
+                <button onClick={handleDownloadPdf} disabled={pdfGenerating}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/30 text-xs text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {pdfGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
+                  {pdfGenerating ? "Generating…" : "PDF Report"}
+                </button>
+                <button onClick={handleDownloadHtml}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
+                  <Download className="w-3 h-3" />HTML
+                </button>
+              </>
+            )}
+            {(complete || hasError) && (
+              <button onClick={handleReset}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
+                <RotateCcw className="w-3 h-3" />Reset
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          {(["PERCEIVE", "ACT", "REVIEW"] as PARPhase[]).map((p) => <PhaseBadge key={p} phase={p} />)}
-          <div className="w-px h-4 bg-border mx-0.5" />
-          {(idle || complete || hasError) && (
-            <button onClick={handleRun}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
-              <Play className="w-3 h-3" />{idle ? "Run PAR Demo" : "Run Again"}
-            </button>
-          )}
-          {active && (
-            <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/60 text-primary-foreground text-xs font-medium cursor-not-allowed">
-              <Loader2 className="w-3 h-3 animate-spin" />{otpWaiting ? "Waiting…" : "Running…"}
-            </button>
-          )}
-          {complete && steps.length > 0 && (
-            <button onClick={handleDownload}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
-              <Download className="w-3 h-3" />Report
-            </button>
-          )}
-          {(complete || hasError) && (
-            <button onClick={handleReset}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs text-foreground hover:bg-secondary transition-colors">
-              <RotateCcw className="w-3 h-3" />Reset
-            </button>
-          )}
-        </div>
+
+        {/* Date range picker row — shown when not actively running */}
+        {!active && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <DateRangePicker value={dateRange} onChange={setDateRange} />
+          </div>
+        )}
       </div>
 
       {/* Status banners */}
