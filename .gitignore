@@ -47,3 +47,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Runtime-generated data (not source code)
+artifacts/api-server/data/hourly-snapshots.json
