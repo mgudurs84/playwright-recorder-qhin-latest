@@ -306,24 +306,26 @@ async function takeShot(page: Page, label: string, clipSelector?: string): Promi
   return `/api/screenshots/${filename}`;
 }
 
-// Take a screenshot focused on the data grid — highlights matching rows, crops to the table.
+// Take a screenshot clipped tightly to just the grid header + data rows,
+// with matching rows highlighted. Handles fixed-height Kendo scroll containers.
 async function takeShotOfGrid(page: Page, label: string): Promise<string> {
   const filename = `par-${label}-${Date.now()}.png`;
   const filepath = path.join(SCREENSHOTS_DIR, filename);
   try {
-    // Inject row-highlight styles then screenshot the grid element
+    // 1. Highlight matching rows
     await page.evaluate(() => {
       const styleId = "__par-row-highlight__";
       if (!document.getElementById(styleId)) {
         const style = document.createElement("style");
         style.id = styleId;
         style.textContent = `
-          .k-grid tbody tr, table tbody tr {
-            background: rgba(59, 130, 246, 0.12) !important;
-            outline: 2px solid #3b82f6 !important;
-            outline-offset: -2px !important;
+          .k-grid tbody tr:not(.k-no-data),
+          table tbody tr:not(.k-no-data) {
+            background: rgba(59, 130, 246, 0.15) !important;
+            box-shadow: inset 0 0 0 2px #3b82f6 !important;
           }
-          .k-grid tbody tr td, table tbody tr td {
+          .k-grid tbody tr td,
+          table tbody tr td {
             font-weight: 600 !important;
           }
         `;
@@ -331,24 +333,52 @@ async function takeShotOfGrid(page: Page, label: string): Promise<string> {
       }
     });
 
-    // Find and screenshot just the grid/table element
-    const gridSel = ".k-grid, [data-role='grid'], table.k-table, table";
-    const grid = page.locator(gridSel).first();
-    if ((await grid.count()) > 0) {
-      await grid.screenshot({ path: filepath });
+    // 2. Compute a tight bounding box: header top → last data row bottom
+    const clip = await page.evaluate(() => {
+      const PADDING = 8;
+      const header =
+        document.querySelector(".k-grid-header") ??
+        document.querySelector("thead") ??
+        document.querySelector(".k-grid");
+      const rows = Array.from(
+        document.querySelectorAll(
+          ".k-grid tbody tr:not(.k-no-data), table tbody tr:not(.k-no-data)"
+        )
+      ).filter((el) => (el as HTMLElement).offsetHeight > 0);
+
+      if (!header || rows.length === 0) return null;
+
+      const hRect = header.getBoundingClientRect();
+      const lastRow = rows[rows.length - 1];
+      const rRect = lastRow.getBoundingClientRect();
+
+      return {
+        x: Math.max(0, hRect.left - PADDING),
+        y: Math.max(0, hRect.top - PADDING),
+        width: hRect.width + PADDING * 2,
+        height: rRect.bottom - hRect.top + PADDING * 2,
+      };
+    });
+
+    if (clip && clip.width > 20 && clip.height > 20) {
+      await page.screenshot({ path: filepath, clip });
     } else {
-      await page.screenshot({ path: filepath, fullPage: false });
+      // Fallback: screenshot just the grid element
+      const gridEl = page.locator(".k-grid, [data-role='grid'], table").first();
+      if ((await gridEl.count()) > 0) {
+        await gridEl.screenshot({ path: filepath });
+      } else {
+        await page.screenshot({ path: filepath, fullPage: false });
+      }
     }
 
-    // Remove the injected styles so they don't bleed into later screenshots
+    // 3. Remove the injected highlight styles
     await page.evaluate(() => {
       document.getElementById("__par-row-highlight__")?.remove();
     });
   } catch (err) {
     console.warn(`[PAR Demo] Grid screenshot failed (${label}):`, (err as Error).message);
-    try {
-      await page.screenshot({ path: filepath, fullPage: false });
-    } catch { /* ignore */ }
+    try { await page.screenshot({ path: filepath, fullPage: false }); } catch { /* ignore */ }
   }
   return `/api/screenshots/${filename}`;
 }
@@ -654,49 +684,100 @@ async function runParScript(opts: { dateFrom?: string; dateTo?: string; transact
         : "No dedicated transaction ID input found — will use Kendo column filter";
       demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-perceive");
 
-      // ACT — fill in the transaction ID
+      // ACT — fill in the transaction ID (three strategies, stop at first success)
       addStep({ phase: "ACT", label: "Enter Transaction ID", description: `Typing transaction ID: ${opts.transactionId}`, screenshotUrl: null, assertionPassed: null });
       let searchApplied = false;
+      let strategyUsed = "none";
       try {
+        // Strategy 1: dedicated form input
         if (inputFound) {
           await txInput.first().clear();
           await txInput.first().fill(opts.transactionId);
-          const searchBtn = page.locator('button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"]');
+          const searchBtn = page.locator(
+            'button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"]'
+          );
           if ((await searchBtn.count()) > 0) await searchBtn.first().click();
           await page.waitForTimeout(3000);
           searchApplied = true;
-        } else {
-          // Kendo column filter strategy
+          strategyUsed = "form-input";
+        }
+
+        // Strategy 2: Kendo column filter icon on "Transaction ID" header
+        if (!searchApplied) {
           const headers = page.locator(".k-grid-header th");
           const colCount = await headers.count();
           let txColIdx = -1;
           for (let i = 0; i < colCount; i++) {
             const txt = (await headers.nth(i).innerText()).toLowerCase();
-            if (txt.includes("transaction id") || txt.includes("transactionid") || txt.includes("trace id")) { txColIdx = i; break; }
+            if (txt.includes("transaction id") || txt.includes("transactionid") || txt.includes("trace id")) {
+              txColIdx = i; break;
+            }
           }
           if (txColIdx >= 0) {
-            const filterIcon = headers.nth(txColIdx).locator(".k-grid-filter, a[class*='filter'], span[class*='filter']");
+            const filterIcon = headers.nth(txColIdx).locator(
+              ".k-grid-filter, a[class*='filter'], span[class*='filter'], button[class*='filter']"
+            );
             if ((await filterIcon.count()) > 0) {
               await filterIcon.first().click();
               await page.waitForTimeout(500);
-              const filterInput = page.locator(".k-filter-menu input[type='text'], .k-popup input[type='text']");
+              const filterInput = page.locator(
+                ".k-filter-menu input[type='text'], .k-popup input[type='text']"
+              );
               if ((await filterInput.count()) > 0) {
                 await filterInput.first().fill(opts.transactionId);
-                const applyBtn = page.locator(".k-filter-menu button:has-text('Filter'), .k-popup button:has-text('Filter')");
+                const applyBtn = page.locator(
+                  ".k-filter-menu button.k-primary, .k-popup button.k-primary, " +
+                  ".k-filter-menu button:has-text('Filter'), .k-popup button:has-text('Filter')"
+                );
                 if ((await applyBtn.count()) > 0) await applyBtn.first().click();
                 await page.waitForTimeout(3000);
                 searchApplied = true;
+                strategyUsed = "kendo-column-filter";
               }
             }
           }
+        }
+
+        // Strategy 3: Kendo Grid JavaScript API — most reliable, bypasses UI
+        if (!searchApplied) {
+          const kendoResult = await page.evaluate((txId: string) => {
+            const candidates = Array.from(
+              document.querySelectorAll("[data-role='grid'], .k-grid")
+            ) as (HTMLElement & { kendoGrid?: unknown })[];
+            for (const el of candidates) {
+              const widget = (el as HTMLElement & {
+                kendoGrid?: { dataSource: { filter(f: object): void } };
+              }).kendoGrid;
+              if (widget?.dataSource?.filter) {
+                widget.dataSource.filter({
+                  field: "TransactionId",
+                  operator: "contains",
+                  value: txId,
+                });
+                return true;
+              }
+              // Also try $(el).data("kendoGrid")
+              const $ = (window as Window & { $?: (el: Element) => { data(k: string): { dataSource: { filter(f: object): void } } | undefined } }).$;
+              if ($) {
+                const g = $(el).data("kendoGrid");
+                if (g?.dataSource?.filter) {
+                  g.dataSource.filter({ field: "TransactionId", operator: "contains", value: txId });
+                  return true;
+                }
+              }
+            }
+            return false;
+          }, opts.transactionId);
+          await page.waitForTimeout(3000);
+          if (kendoResult) { searchApplied = true; strategyUsed = "kendo-js-api"; }
         }
       } catch (err) {
         console.warn("[PAR Demo] Transaction ID search failed:", (err as Error).message);
       }
       demoState.steps.at(-1)!.assertionPassed = searchApplied;
       demoState.steps.at(-1)!.description = searchApplied
-        ? `Transaction ID filter applied: ${opts.transactionId}`
-        : `Could not apply transaction ID filter — portal UI may differ`;
+        ? `Transaction ID filter applied via ${strategyUsed}: "${opts.transactionId}"`
+        : `Could not apply filter — portal UI may not support transaction ID search`;
       // Crop to the grid after applying filter (removes noisy page chrome)
       demoState.steps.at(-1)!.screenshotUrl = await takeShotOfGrid(page, "step-txid-act");
 
