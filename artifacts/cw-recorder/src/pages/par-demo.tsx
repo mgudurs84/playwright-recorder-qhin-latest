@@ -3,7 +3,7 @@ import {
   Play, RotateCcw, Download, Loader2, CheckCircle2, XCircle,
   Clock, Monitor, Eye, Zap, Search, Mail, KeyRound, Sparkles,
   AlertTriangle, BarChart3, Building2, Lightbulb, ArrowRight, Camera, X,
-  Calendar, CalendarDays, FileText,
+  Calendar, CalendarDays, FileText, Hash,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiUrl } from "@/lib/utils";
@@ -35,6 +35,8 @@ interface DemoStatusResponse {
   aiSummary: string | null;
   aiSummaryPending: boolean;
   dateRange?: { dateFrom: string; dateTo: string } | null;
+  searchMode?: "date" | "transaction_id";
+  transactionId?: string | null;
 }
 
 const PHASE_META: Record<PARPhase, { border: string; bg: string; text: string; badge: string; icon: typeof Eye }> = {
@@ -213,7 +215,7 @@ function Skeleton({ className }: { className?: string }) {
 }
 
 // ── AI Summary panel ─────────────────────────────────────────────────────────
-function AiSummaryPanel({ summary, pending }: { summary: string | null; pending: boolean }) {
+function AiSummaryPanel({ summary, pending, mode }: { summary: string | null; pending: boolean; mode?: "date" | "transaction_id" }) {
   if (!pending && !summary) return null;
   const sections = summary ? parseSections(summary) : [];
 
@@ -227,7 +229,9 @@ function AiSummaryPanel({ summary, pending }: { summary: string | null; pending:
           <Sparkles className="w-3 h-3 text-violet-400" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[11px] font-semibold text-violet-300 leading-none mb-0.5">Vertex AI · Server Error Analysis</p>
+          <p className="text-[11px] font-semibold text-violet-300 leading-none mb-0.5">
+            Vertex AI · {mode === "transaction_id" ? "Transaction Analysis" : "Server Error Analysis"}
+          </p>
           <p className="text-[10px] text-muted-foreground/60 leading-none">Gemini 2.5 Flash</p>
         </div>
         {pending && <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />}
@@ -726,6 +730,8 @@ export default function ParDemo() {
   });
   const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
   const [dateRange, setDateRange] = useState<DateRange>(DEFAULT_DATE_RANGE);
+  const [searchMode, setSearchMode] = useState<"date" | "transaction_id">("date");
+  const [transactionId, setTransactionId] = useState("");
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stepsEndRef = useRef<HTMLDivElement>(null);
 
@@ -769,8 +775,12 @@ export default function ParDemo() {
     setSelectedStepId(null);
     try {
       const body: Record<string, string> = {};
-      if (dateRange.dateFrom) body.dateFrom = dateRange.dateFrom;
-      if (dateRange.dateTo)   body.dateTo   = dateRange.dateTo;
+      if (searchMode === "transaction_id") {
+        if (transactionId.trim()) body.transactionId = transactionId.trim();
+      } else {
+        if (dateRange.dateFrom) body.dateFrom = dateRange.dateFrom;
+        if (dateRange.dateTo)   body.dateTo   = dateRange.dateTo;
+      }
       const res = await fetch(apiUrl("/api/par-demo/run"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -786,7 +796,7 @@ export default function ParDemo() {
     } catch (err) {
       setDemoState((p) => ({ ...p, status: "error", errorMessage: (err as Error).message }));
     }
-  }, [startPolling, dateRange]);
+  }, [startPolling, searchMode, transactionId, dateRange]);
 
   const handleReset = useCallback(async () => {
     stopPolling();
@@ -852,14 +862,19 @@ export default function ParDemo() {
             <h1 className="text-base font-bold text-foreground leading-tight" style={{ fontFamily: "var(--font-display)" }}>
               <span className="text-primary">PAR</span> Loop Demo
             </h1>
-            <p className="text-xs text-muted-foreground">CommonWell Portal · Server Errors · Vertex AI</p>
+            <p className="text-xs text-muted-foreground">
+              CommonWell Portal · {searchMode === "transaction_id" ? "Transaction Lookup" : "Server Errors"} · Vertex AI
+            </p>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap justify-end">
             {(["PERCEIVE", "ACT", "REVIEW"] as PARPhase[]).map((p) => <PhaseBadge key={p} phase={p} />)}
             <div className="w-px h-4 bg-border mx-0.5" />
             {(idle || complete || hasError) && (
-              <button onClick={handleRun}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
+              <button
+                onClick={handleRun}
+                disabled={searchMode === "transaction_id" && !transactionId.trim()}
+                title={searchMode === "transaction_id" && !transactionId.trim() ? "Enter a Transaction ID first" : undefined}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <Play className="w-3 h-3" />{idle ? "Run PAR Demo" : "Run Again"}
               </button>
             )}
@@ -890,10 +905,53 @@ export default function ParDemo() {
           </div>
         </div>
 
-        {/* Date range picker row — shown when not actively running */}
+        {/* Search controls — shown when not actively running */}
         {!active && (
-          <div className="flex items-center gap-3 flex-wrap">
-            <DateRangePicker value={dateRange} onChange={setDateRange} />
+          <div className="flex flex-col gap-3">
+            {/* Mode toggle */}
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-white/5 border border-white/10 w-fit">
+              <button
+                onClick={() => setSearchMode("date")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  searchMode === "date"
+                    ? "bg-blue-600 text-white shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <CalendarDays className="w-3 h-3" />
+                Date Range
+              </button>
+              <button
+                onClick={() => setSearchMode("transaction_id")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  searchMode === "transaction_id"
+                    ? "bg-blue-600 text-white shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Hash className="w-3 h-3" />
+                Transaction ID
+              </button>
+            </div>
+            {/* Conditional input */}
+            {searchMode === "date" ? (
+              <DateRangePicker value={dateRange} onChange={setDateRange} />
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={transactionId}
+                    onChange={(e) => setTransactionId(e.target.value)}
+                    placeholder="e.g. 12345-abcde"
+                    className="pl-8 pr-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/60 w-64"
+                    onKeyDown={(e) => e.key === "Enter" && !active && handleRun()}
+                  />
+                </div>
+                <span className="text-xs text-slate-500">Search by exact Transaction ID</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -966,7 +1024,7 @@ export default function ParDemo() {
 
             {/* AI Summary — appears inline after steps complete */}
             {(aiSummaryPending || aiSummary) && (
-              <AiSummaryPanel summary={aiSummary} pending={aiSummaryPending} />
+              <AiSummaryPanel summary={aiSummary} pending={aiSummaryPending} mode={demoState.searchMode} />
             )}
 
             <div ref={stepsEndRef} />

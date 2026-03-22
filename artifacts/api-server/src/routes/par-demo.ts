@@ -31,6 +31,8 @@ interface DemoState {
   aiSummary: string | null;
   aiSummaryPending: boolean;
   dateRange: { dateFrom: string; dateTo: string } | null;
+  searchMode: "date" | "transaction_id";
+  transactionId: string | null;
 }
 
 let demoState: DemoState = {
@@ -40,6 +42,8 @@ let demoState: DemoState = {
   aiSummary: null,
   aiSummaryPending: false,
   dateRange: null,
+  searchMode: "date",
+  transactionId: null,
 };
 
 let activePage: Page | null = null;
@@ -213,13 +217,48 @@ async function applyDateRangeFilter(page: Page, dateFrom: string, dateTo: string
   }
 }
 
-async function summariseWithVertex(pageText: string, rowCount: number): Promise<string> {
+async function summariseWithVertex(
+  pageText: string,
+  rowCount: number,
+  opts: { mode?: "date" | "transaction_id"; transactionId?: string | null } = {}
+): Promise<string> {
   const model = createVertexModel();
-  const { text } = await generateText({
-    model,
-    prompt: `You are a CommonWell Health Alliance CDR analyst reviewing server error transactions.
+  const isTxMode = opts.mode === "transaction_id" && opts.transactionId;
+  const contextHeader = isTxMode
+    ? `The following content was extracted from the CommonWell portal for Transaction ID: **${opts.transactionId}** (${rowCount} rows visible).`
+    : `The following content was extracted from the CommonWell portal "Server Errors" view (${rowCount} rows visible).`;
 
-The following content was extracted from the CommonWell portal "Server Errors" view (${rowCount} rows visible).
+  const prompt = isTxMode
+    ? `You are a CommonWell Health Alliance CDR analyst reviewing a specific transaction.
+
+${contextHeader}
+
+EXTRACTED PAGE CONTENT:
+${pageText.slice(0, 12000)}
+
+---
+
+Respond ONLY with markdown using exactly these five section headings (copy them verbatim):
+
+### Transaction Summary
+One short paragraph: the transaction ID, type, status, timestamps, and overall outcome.
+
+### Request / Response Details
+Key fields: HTTP method, endpoint, status code, response time, payload info. Use a table if data is available.
+
+### Organisations Involved
+Bullet list of any source/destination organisations, NPI, or member IDs visible in the data.
+
+### Key Findings
+3–5 concise bullet points highlighting the most important insights about this transaction.
+
+### Recommended Next Steps
+Numbered list of concrete, prioritised actions for the CDR operations team.
+
+Be factual and data-driven. If the data is limited or unclear, say so briefly within each section.`
+    : `You are a CommonWell Health Alliance CDR analyst reviewing server error transactions.
+
+${contextHeader}
 
 EXTRACTED PAGE CONTENT:
 ${pageText.slice(0, 12000)}
@@ -243,8 +282,9 @@ Bullet list of which organisations or transaction types appear most frequently.
 ### Recommended Next Steps
 Numbered list of concrete, prioritised actions for the CDR operations team.
 
-Be factual and data-driven. If the data is limited or unclear, say so briefly within each section.`,
-  });
+Be factual and data-driven. If the data is limited or unclear, say so briefly within each section.`;
+
+  const { text } = await generateText({ model, prompt });
   return text;
 }
 
@@ -386,7 +426,8 @@ async function clickServerErrors(page: Page): Promise<{ found: boolean; method: 
   return { found: false, method: "none" };
 }
 
-async function runParScript(opts: { dateFrom?: string; dateTo?: string } = {}): Promise<void> {
+async function runParScript(opts: { dateFrom?: string; dateTo?: string; transactionId?: string } = {}): Promise<void> {
+  const searchMode: "date" | "transaction_id" = opts.transactionId ? "transaction_id" : "date";
   demoState = {
     status: "running",
     steps: [],
@@ -394,6 +435,8 @@ async function runParScript(opts: { dateFrom?: string; dateTo?: string } = {}): 
     aiSummary: null,
     aiSummaryPending: false,
     dateRange: opts.dateFrom && opts.dateTo ? { dateFrom: opts.dateFrom, dateTo: opts.dateTo } : null,
+    searchMode,
+    transactionId: opts.transactionId ?? null,
   };
 
   let browser: Browser | null = null;
@@ -536,57 +579,134 @@ async function runParScript(opts: { dateFrom?: string; dateTo?: string } = {}): 
     sGrid.description = `On Transaction Logs: ${onTxLogs} · Grid visible: ${gridVisible}`;
     sGrid.screenshotUrl = await takeShot(page, "step-tx-grid");
 
-    // ── ACT — apply date range filter (if requested) ──────────────────────
-    if (opts.dateFrom && opts.dateTo) {
-      addStep({
-        phase: "ACT",
-        label: "Apply Date Range Filter",
-        description: `Setting date range: ${opts.dateFrom} → ${opts.dateTo}`,
-        screenshotUrl: null,
-        assertionPassed: null,
-      });
+    let extractedText = "";
+    let rowCount = 0;
+    let pageCount = 0;
+
+    if (searchMode === "transaction_id" && opts.transactionId) {
+      // ── TRANSACTION ID MODE ───────────────────────────────────────────────
+
+      // PERCEIVE — locate a transaction ID search input
+      addStep({ phase: "PERCEIVE", label: "Locate Transaction ID Search", description: `Looking for a search input to query transaction: ${opts.transactionId}`, screenshotUrl: null, assertionPassed: null });
+      const txInput = page.locator(
+        'input[name*="transactionId" i], input[name*="transaction_id" i], ' +
+        'input[id*="transactionId" i], input[placeholder*="transaction id" i], ' +
+        'input[placeholder*="search" i]'
+      );
+      const inputFound = (await txInput.count()) > 0;
+      demoState.steps.at(-1)!.assertionPassed = inputFound;
+      demoState.steps.at(-1)!.description = inputFound
+        ? `Transaction ID input located (${await txInput.count()} candidate(s))`
+        : "No dedicated transaction ID input found — will use Kendo column filter";
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-perceive");
+
+      // ACT — fill in the transaction ID
+      addStep({ phase: "ACT", label: "Enter Transaction ID", description: `Typing transaction ID: ${opts.transactionId}`, screenshotUrl: null, assertionPassed: null });
+      let searchApplied = false;
       try {
-        await applyDateRangeFilter(page, opts.dateFrom, opts.dateTo);
-        demoState.steps.at(-1)!.assertionPassed = true;
-        demoState.steps.at(-1)!.description = `Date range applied: ${opts.dateFrom} → ${opts.dateTo}`;
+        if (inputFound) {
+          await txInput.first().clear();
+          await txInput.first().fill(opts.transactionId);
+          const searchBtn = page.locator('button:has-text("Search"), button:has-text("Filter"), button:has-text("Apply"), input[type="submit"]');
+          if ((await searchBtn.count()) > 0) await searchBtn.first().click();
+          await page.waitForTimeout(3000);
+          searchApplied = true;
+        } else {
+          // Kendo column filter strategy
+          const headers = page.locator(".k-grid-header th");
+          const colCount = await headers.count();
+          let txColIdx = -1;
+          for (let i = 0; i < colCount; i++) {
+            const txt = (await headers.nth(i).innerText()).toLowerCase();
+            if (txt.includes("transaction id") || txt.includes("transactionid") || txt.includes("trace id")) { txColIdx = i; break; }
+          }
+          if (txColIdx >= 0) {
+            const filterIcon = headers.nth(txColIdx).locator(".k-grid-filter, a[class*='filter'], span[class*='filter']");
+            if ((await filterIcon.count()) > 0) {
+              await filterIcon.first().click();
+              await page.waitForTimeout(500);
+              const filterInput = page.locator(".k-filter-menu input[type='text'], .k-popup input[type='text']");
+              if ((await filterInput.count()) > 0) {
+                await filterInput.first().fill(opts.transactionId);
+                const applyBtn = page.locator(".k-filter-menu button:has-text('Filter'), .k-popup button:has-text('Filter')");
+                if ((await applyBtn.count()) > 0) await applyBtn.first().click();
+                await page.waitForTimeout(3000);
+                searchApplied = true;
+              }
+            }
+          }
+        }
       } catch (err) {
-        console.warn("[PAR Demo] Date range filter failed:", (err as Error).message);
-        demoState.steps.at(-1)!.assertionPassed = false;
-        demoState.steps.at(-1)!.description = `Date range filter failed: ${(err as Error).message}`;
+        console.warn("[PAR Demo] Transaction ID search failed:", (err as Error).message);
       }
-      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-date-filter");
+      demoState.steps.at(-1)!.assertionPassed = searchApplied;
+      demoState.steps.at(-1)!.description = searchApplied
+        ? `Transaction ID filter applied: ${opts.transactionId}`
+        : `Could not apply transaction ID filter — portal UI may differ`;
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-act");
+
+      // REVIEW — verify results appeared
+      addStep({ phase: "REVIEW", label: "Verify Search Results", description: "", screenshotUrl: null, assertionPassed: null });
+      const gridRows = await page.locator(".k-grid tbody tr, table tbody tr").count().catch(() => 0);
+      demoState.steps.at(-1)!.assertionPassed = gridRows > 0;
+      demoState.steps.at(-1)!.description = `Grid rows after filter: ${gridRows}`;
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-review");
+
+      // PERCEIVE — extract all result pages
+      addStep({ phase: "PERCEIVE", label: "Extract Transaction Data", description: "Reading all result pages for this transaction", screenshotUrl: null, assertionPassed: null });
+      await page.waitForTimeout(1500);
+      ({ text: extractedText, rowCount, pageCount } = await extractAllPagesContent(page));
+      demoState.steps.at(-1)!.description = `Extracted ${rowCount} rows across ${pageCount} page${pageCount !== 1 ? "s" : ""} · ${extractedText.length} chars`;
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-grid");
+
+    } else {
+      // ── DATE / SERVER ERRORS MODE (existing flow) ────────────────────────
+
+      // ACT — apply date range filter (if requested)
+      if (opts.dateFrom && opts.dateTo) {
+        addStep({ phase: "ACT", label: "Apply Date Range Filter", description: `Setting date range: ${opts.dateFrom} → ${opts.dateTo}`, screenshotUrl: null, assertionPassed: null });
+        try {
+          await applyDateRangeFilter(page, opts.dateFrom, opts.dateTo);
+          demoState.steps.at(-1)!.assertionPassed = true;
+          demoState.steps.at(-1)!.description = `Date range applied: ${opts.dateFrom} → ${opts.dateTo}`;
+        } catch (err) {
+          console.warn("[PAR Demo] Date range filter failed:", (err as Error).message);
+          demoState.steps.at(-1)!.assertionPassed = false;
+          demoState.steps.at(-1)!.description = `Date range filter failed: ${(err as Error).message}`;
+        }
+        demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-date-filter");
+      }
+
+      // PERCEIVE — look for Server Errors filter
+      addStep({ phase: "PERCEIVE", label: "Locate Server Errors Filter", description: "Scanning the page for a Server Errors tab, link, or filter option", screenshotUrl: null, assertionPassed: null });
+      const navItems = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("a, button, [role='tab'], li"))
+          .map((el) => (el as HTMLElement).innerText.trim())
+          .filter((t) => t.length > 0 && t.length < 80)
+          .slice(0, 40)
+      );
+      console.log("[PAR Demo] Visible nav items:", navItems.join(" | "));
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-locate-errors");
+
+      // ACT — click Server Errors
+      addStep({ phase: "ACT", label: "Click Server Errors", description: "Attempting to filter/navigate to the Server Errors view using multiple strategies", screenshotUrl: null, assertionPassed: null });
+      const { found, method } = await withRetry(() => clickServerErrors(page!));
+      const sClick = demoState.steps.at(-1)!;
+      sClick.description = found
+        ? `Server Errors filter applied via: ${method}`
+        : "Server Errors filter not found — capturing current error-relevant page content";
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-server-errors-clicked");
+
+      // PERCEIVE — observe filtered grid (all pages)
+      addStep({ phase: "PERCEIVE", label: "Observe Server Errors View", description: "Reading all grid pages and extracting complete error data", screenshotUrl: null, assertionPassed: null });
+      await page.waitForTimeout(1500);
+      ({ text: extractedText, rowCount, pageCount } = await extractAllPagesContent(page));
+      demoState.steps.at(-1)!.description = `Extracted ${rowCount} rows across ${pageCount} page${pageCount !== 1 ? "s" : ""} · ${extractedText.length} chars`;
+      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-server-errors-grid");
     }
 
-    // ── Server Errors: PERCEIVE — look for the filter ─────────────────────
-    addStep({ phase: "PERCEIVE", label: "Locate Server Errors Filter", description: "Scanning the page for a Server Errors tab, link, or filter option", screenshotUrl: null, assertionPassed: null });
-    const navItems = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("a, button, [role='tab'], li"))
-        .map((el) => (el as HTMLElement).innerText.trim())
-        .filter((t) => t.length > 0 && t.length < 80)
-        .slice(0, 40)
-    );
-    console.log("[PAR Demo] Visible nav items:", navItems.join(" | "));
-    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-locate-errors");
-
-    // ── Server Errors: ACT — click it (with retry) ────────────────────────
-    addStep({ phase: "ACT", label: "Click Server Errors", description: "Attempting to filter/navigate to the Server Errors view using multiple strategies", screenshotUrl: null, assertionPassed: null });
-    const { found, method } = await withRetry(() => clickServerErrors(page!));
-    const sClick = demoState.steps.at(-1)!;
-    sClick.description = found
-      ? `Server Errors filter applied via: ${method}`
-      : "Server Errors filter not found — capturing current error-relevant page content";
-    demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-server-errors-clicked");
-
-    // ── Server Errors: PERCEIVE — observe filtered grid (all pages) ───────
-    addStep({ phase: "PERCEIVE", label: "Observe Server Errors View", description: "Reading all grid pages and extracting complete error data", screenshotUrl: null, assertionPassed: null });
-    await page.waitForTimeout(1500);
-    const { text: extractedText, rowCount, pageCount } = await extractAllPagesContent(page);
-    const sObserve = demoState.steps.at(-1)!;
-    sObserve.description = `Extracted ${rowCount} rows across ${pageCount} page${pageCount !== 1 ? "s" : ""} · ${extractedText.length} chars`;
-    sObserve.screenshotUrl = await takeShot(page, "step-server-errors-grid");
-
-    // ── REVIEW — assert something was extracted ───────────────────────────
-    addStep({ phase: "REVIEW", label: "Assert Error Data Extracted", description: "", screenshotUrl: null, assertionPassed: null });
+    // ── REVIEW — assert something was extracted (both modes) ──────────────
+    addStep({ phase: "REVIEW", label: "Assert Data Extracted", description: "", screenshotUrl: null, assertionPassed: null });
     const sExtract = demoState.steps.at(-1)!;
     sExtract.assertionPassed = extractedText.length > 50;
     sExtract.description = `Content extracted: ${extractedText.length > 50} · ${rowCount} rows · ${extractedText.length} chars`;
@@ -599,7 +719,7 @@ async function runParScript(opts: { dateFrom?: string; dateTo?: string } = {}): 
 
     let summaryText = "";
     try {
-      summaryText = await summariseWithVertex(extractedText, rowCount);
+      summaryText = await summariseWithVertex(extractedText, rowCount, { mode: searchMode, transactionId: opts.transactionId });
       demoState.aiSummary = summaryText;
       console.log("[PAR Demo] Vertex AI summary generated — length:", summaryText.length);
     } catch (aiErr) {
@@ -639,9 +759,16 @@ export function registerParDemoRoutes(app: Express): void {
     if (demoState.status === "running" || demoState.status === "otp:waiting") {
       return res.status(409).json({ error: "A PAR demo is already running" });
     }
-    const { dateFrom, dateTo } = (req.body ?? {}) as { dateFrom?: string; dateTo?: string };
-    runParScript({ dateFrom, dateTo }).catch(console.error);
-    res.json({ started: true, dateRange: dateFrom && dateTo ? { dateFrom, dateTo } : null });
+    const { dateFrom, dateTo, transactionId } = (req.body ?? {}) as {
+      dateFrom?: string; dateTo?: string; transactionId?: string;
+    };
+    runParScript({ dateFrom, dateTo, transactionId }).catch(console.error);
+    res.json({
+      started: true,
+      searchMode: transactionId ? "transaction_id" : "date",
+      transactionId: transactionId ?? null,
+      dateRange: dateFrom && dateTo ? { dateFrom, dateTo } : null,
+    });
   });
 
   app.get("/api/par-demo/status", (_req: Request, res: Response) => {
@@ -652,6 +779,8 @@ export function registerParDemoRoutes(app: Express): void {
       aiSummary: demoState.aiSummary,
       aiSummaryPending: demoState.aiSummaryPending,
       dateRange: demoState.dateRange,
+      searchMode: demoState.searchMode,
+      transactionId: demoState.transactionId,
     });
   });
 
@@ -671,7 +800,7 @@ export function registerParDemoRoutes(app: Express): void {
 
   app.post("/api/par-demo/reset", (_req: Request, res: Response) => {
     if (otpRejecter) { otpRejecter(new Error("Reset by user")); otpResolver = null; otpRejecter = null; }
-    demoState = { status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false, dateRange: null };
+    demoState = { status: "idle", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false, dateRange: null, searchMode: "date", transactionId: null };
     res.json({ reset: true });
   });
 
