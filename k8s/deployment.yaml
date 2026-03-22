@@ -99,7 +99,13 @@ spec:
               subPath: snapshots          # hourly-snapshots.json lands here
             - name: app-data
               mountPath: /tmp/cw-sessions
-              subPath: cw-sessions        # Playwright session cookies
+              subPath: cw-sessions        # Playwright session cookies — survive restarts
+            - name: app-data
+              mountPath: /tmp/cw-screenshots
+              subPath: cw-screenshots     # Browser screenshots — survive restarts
+            - name: app-data
+              mountPath: /tmp/cw-reports
+              subPath: cw-reports         # CW Runner markdown reports — survive restarts
           resources:
             requests:
               cpu: "500m"
