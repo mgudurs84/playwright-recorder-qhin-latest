@@ -1,8 +1,8 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { createVertex } from "@ai-sdk/google-vertex";
 import { generateText } from "ai";
+import { createVertexModel } from "../lib/vertex";
 import { getPlaywrightService } from "./playwright-service";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,21 +102,6 @@ export function buildPerTypeStats(records: CwTransactionRecord[]): PerTypeStat[]
   }
 
   return stats.sort((a, b) => b.errors - a.errors);
-}
-
-function createVertexModel() {
-  const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
-  if (!serviceAccountJson) throw new Error("GCP_SERVICE_ACCOUNT_JSON not set");
-  const serviceAccount = JSON.parse(serviceAccountJson) as { project_id: string; private_key?: string };
-  if (serviceAccount.private_key) {
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
-  }
-  const vertex = createVertex({
-    project: serviceAccount.project_id,
-    location: "us-central1",
-    googleAuthOptions: { credentials: serviceAccount },
-  });
-  return vertex(process.env.VERTEX_MODEL_ID || "gemini-2.5-flash");
 }
 
 export async function generateHourlySummary(

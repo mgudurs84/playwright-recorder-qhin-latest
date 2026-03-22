@@ -3,8 +3,8 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { createVertex } from "@ai-sdk/google-vertex";
 import { generateText } from "ai";
+import { createVertexModel } from "../lib/vertex";
 
 const SCREENSHOTS_DIR = path.join(os.tmpdir(), "cw-screenshots");
 const PORTAL_URL = "https://integration.commonwellalliance.lkopera.com/";
@@ -211,23 +211,6 @@ async function applyDateRangeFilter(page: Page, dateFrom: string, dateTo: string
   } else {
     console.warn("[PAR Demo] Date range inputs not found — skipping date filter");
   }
-}
-
-function createVertexModel() {
-  const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
-  if (!serviceAccountJson) throw new Error("GCP_SERVICE_ACCOUNT_JSON not set");
-  const serviceAccount = JSON.parse(serviceAccountJson) as { project_id: string; private_key?: string };
-  // Replit secret storage sometimes stores \n as literal backslash-n instead of real newlines.
-  // The Google auth library needs real newline characters in the PEM key to sign JWTs correctly.
-  if (serviceAccount.private_key) {
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
-  }
-  const vertex = createVertex({
-    project: serviceAccount.project_id,
-    location: "us-central1",
-    googleAuthOptions: { credentials: serviceAccount },
-  });
-  return vertex(process.env.VERTEX_MODEL_ID || "gemini-2.5-flash");
 }
 
 async function summariseWithVertex(pageText: string, rowCount: number): Promise<string> {

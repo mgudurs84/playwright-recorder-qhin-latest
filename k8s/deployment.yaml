@@ -88,12 +88,11 @@ spec:
                 secretKeyRef:
                   name: cdr-secrets
                   key: cw-password
-            # Vertex AI / Gemini service account
-            - name: GCP_SERVICE_ACCOUNT_JSON
-              valueFrom:
-                secretKeyRef:
-                  name: cdr-secrets
-                  key: gcp-service-account-json
+            # Vertex AI / Gemini — GKE uses Workload Identity (ADC); no JSON key needed.
+            # Set GCP_PROJECT_ID to your GCP project. The SDK finds credentials
+            # automatically via the GKE metadata server.
+            - name: GCP_PROJECT_ID
+              value: "YOUR_GCP_PROJECT_ID"   # ← replace with your project ID
           volumeMounts:
             - name: app-data
               mountPath: /data
