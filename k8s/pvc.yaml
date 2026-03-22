@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cdr-data-pvc
+  namespace: cdr-observability
+  labels:
+    app.kubernetes.io/name: cdr-observability
+spec:
+  accessModes:
+    - ReadWriteOnce          # Single pod — matches replicas: 1 constraint
+  storageClassName: standard-rwo  # GKE default; change to your StorageClass if needed
+  resources:
+    requests:
+      storage: 2Gi           # Hourly snapshots JSON + Playwright session cookies

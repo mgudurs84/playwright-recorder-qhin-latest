@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "id": "1774141200007",
+    "trigger": "scheduled",
+    "status": "auth_required",
+    "windowHours": 1,
+    "windowStart": "2026-03-22T00:00:00.007Z",
+    "windowEnd": "2026-03-22T01:00:00.007Z",
+    "totalRecords": 0,
+    "downloadCount": 0,
+    "errorCount": 0,
+    "perTypeStats": [],
+    "summary": null,
+    "errorMessage": null,
+    "createdAt": "2026-03-22T01:00:00.007Z",
+    "completedAt": "2026-03-22T01:00:07.987Z"
+  },
+  {
+    "id": "1774137600013",
+    "trigger": "scheduled",
+    "status": "auth_required",
+    "windowHours": 1,
+    "windowStart": "2026-03-21T23:00:00.013Z",
+    "windowEnd": "2026-03-22T00:00:00.013Z",
+    "totalRecords": 0,
+    "downloadCount": 0,
+    "errorCount": 0,
+    "perTypeStats": [],
+    "summary": null,
+    "errorMessage": null,
+    "createdAt": "2026-03-22T00:00:00.013Z",
+    "completedAt": "2026-03-22T00:00:10.481Z"
+  }
+]
