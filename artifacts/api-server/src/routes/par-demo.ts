@@ -288,13 +288,67 @@ Be factual and data-driven. If the data is limited or unclear, say so briefly wi
   return text;
 }
 
-async function takeShot(page: Page, label: string): Promise<string> {
+async function takeShot(page: Page, label: string, clipSelector?: string): Promise<string> {
   const filename = `par-${label}-${Date.now()}.png`;
   const filepath = path.join(SCREENSHOTS_DIR, filename);
   try {
+    if (clipSelector) {
+      const el = page.locator(clipSelector).first();
+      if ((await el.count()) > 0) {
+        await el.screenshot({ path: filepath });
+        return `/api/screenshots/${filename}`;
+      }
+    }
     await page.screenshot({ path: filepath, fullPage: false });
   } catch (err) {
     console.warn(`[PAR Demo] Screenshot failed (${label}):`, (err as Error).message);
+  }
+  return `/api/screenshots/${filename}`;
+}
+
+// Take a screenshot focused on the data grid — highlights matching rows, crops to the table.
+async function takeShotOfGrid(page: Page, label: string): Promise<string> {
+  const filename = `par-${label}-${Date.now()}.png`;
+  const filepath = path.join(SCREENSHOTS_DIR, filename);
+  try {
+    // Inject row-highlight styles then screenshot the grid element
+    await page.evaluate(() => {
+      const styleId = "__par-row-highlight__";
+      if (!document.getElementById(styleId)) {
+        const style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = `
+          .k-grid tbody tr, table tbody tr {
+            background: rgba(59, 130, 246, 0.12) !important;
+            outline: 2px solid #3b82f6 !important;
+            outline-offset: -2px !important;
+          }
+          .k-grid tbody tr td, table tbody tr td {
+            font-weight: 600 !important;
+          }
+        `;
+        document.head.appendChild(style);
+      }
+    });
+
+    // Find and screenshot just the grid/table element
+    const gridSel = ".k-grid, [data-role='grid'], table.k-table, table";
+    const grid = page.locator(gridSel).first();
+    if ((await grid.count()) > 0) {
+      await grid.screenshot({ path: filepath });
+    } else {
+      await page.screenshot({ path: filepath, fullPage: false });
+    }
+
+    // Remove the injected styles so they don't bleed into later screenshots
+    await page.evaluate(() => {
+      document.getElementById("__par-row-highlight__")?.remove();
+    });
+  } catch (err) {
+    console.warn(`[PAR Demo] Grid screenshot failed (${label}):`, (err as Error).message);
+    try {
+      await page.screenshot({ path: filepath, fullPage: false });
+    } catch { /* ignore */ }
   }
   return `/api/screenshots/${filename}`;
 }
@@ -643,21 +697,23 @@ async function runParScript(opts: { dateFrom?: string; dateTo?: string; transact
       demoState.steps.at(-1)!.description = searchApplied
         ? `Transaction ID filter applied: ${opts.transactionId}`
         : `Could not apply transaction ID filter — portal UI may differ`;
-      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-act");
+      // Crop to the grid after applying filter (removes noisy page chrome)
+      demoState.steps.at(-1)!.screenshotUrl = await takeShotOfGrid(page, "step-txid-act");
 
       // REVIEW — verify results appeared
       addStep({ phase: "REVIEW", label: "Verify Search Results", description: "", screenshotUrl: null, assertionPassed: null });
       const gridRows = await page.locator(".k-grid tbody tr, table tbody tr").count().catch(() => 0);
       demoState.steps.at(-1)!.assertionPassed = gridRows > 0;
-      demoState.steps.at(-1)!.description = `Grid rows after filter: ${gridRows}`;
-      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-review");
+      demoState.steps.at(-1)!.description = `Grid rows after filter: ${gridRows} — highlighted below`;
+      // Highlighted grid-only screenshot so the matching row(s) stand out
+      demoState.steps.at(-1)!.screenshotUrl = await takeShotOfGrid(page, "step-txid-review");
 
       // PERCEIVE — extract all result pages
       addStep({ phase: "PERCEIVE", label: "Extract Transaction Data", description: "Reading all result pages for this transaction", screenshotUrl: null, assertionPassed: null });
       await page.waitForTimeout(1500);
       ({ text: extractedText, rowCount, pageCount } = await extractAllPagesContent(page));
       demoState.steps.at(-1)!.description = `Extracted ${rowCount} rows across ${pageCount} page${pageCount !== 1 ? "s" : ""} · ${extractedText.length} chars`;
-      demoState.steps.at(-1)!.screenshotUrl = await takeShot(page, "step-txid-grid");
+      demoState.steps.at(-1)!.screenshotUrl = await takeShotOfGrid(page, "step-txid-grid");
 
     } else {
       // ── DATE / SERVER ERRORS MODE (existing flow) ────────────────────────
