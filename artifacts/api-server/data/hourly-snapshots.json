@@ -1,5 +1,21 @@
 [
   {
+    "id": "1774418400029",
+    "trigger": "scheduled",
+    "status": "auth_required",
+    "windowHours": 1,
+    "windowStart": "2026-03-25T05:00:00.029Z",
+    "windowEnd": "2026-03-25T06:00:00.029Z",
+    "totalRecords": 0,
+    "downloadCount": 0,
+    "errorCount": 0,
+    "perTypeStats": [],
+    "summary": null,
+    "errorMessage": null,
+    "createdAt": "2026-03-25T06:00:00.029Z",
+    "completedAt": "2026-03-25T06:00:08.961Z"
+  },
+  {
     "id": "1774321200011",
     "trigger": "scheduled",
     "status": "running",
