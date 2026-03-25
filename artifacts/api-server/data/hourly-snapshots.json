@@ -1,5 +1,37 @@
 [
   {
+    "id": "1774321200011",
+    "trigger": "scheduled",
+    "status": "running",
+    "windowHours": 1,
+    "windowStart": "2026-03-24T02:00:00.011Z",
+    "windowEnd": "2026-03-24T03:00:00.011Z",
+    "totalRecords": 0,
+    "downloadCount": 0,
+    "errorCount": 0,
+    "perTypeStats": [],
+    "summary": null,
+    "errorMessage": null,
+    "createdAt": "2026-03-24T03:00:00.011Z",
+    "completedAt": null
+  },
+  {
+    "id": "1774317600008",
+    "trigger": "scheduled",
+    "status": "running",
+    "windowHours": 1,
+    "windowStart": "2026-03-24T01:00:00.008Z",
+    "windowEnd": "2026-03-24T02:00:00.008Z",
+    "totalRecords": 0,
+    "downloadCount": 0,
+    "errorCount": 0,
+    "perTypeStats": [],
+    "summary": null,
+    "errorMessage": null,
+    "createdAt": "2026-03-24T02:00:00.008Z",
+    "completedAt": null
+  },
+  {
     "id": "1774148400012",
     "trigger": "scheduled",
     "status": "auth_required",

@@ -1,93 +1,96 @@
 # CDR Observability — Windows Local Run Guide
 
-Run the full CDR Observability stack (API server + React frontend) on a Windows machine
-without Docker or WSL.
+Run the full CDR Observability stack on a Windows machine without Docker or WSL.
+
+---
+
+## Quick summary
+
+| Thing | Value |
+|---|---|
+| API server port | **8080** (hardcoded — do not change) |
+| Frontend (Vite) port | **5173** (default) |
+| Frontend URL | http://localhost:5173/ |
+| API health check | http://localhost:8080/api/health |
+| `.env` file location | `artifacts\api-server\.env` |
 
 ---
 
 ## Prerequisites
 
-Install the following before you start. Use the recommended installers below.
+Install these once. Use the links below.
 
-| Tool | Where to get it | Notes |
+| Tool | Download | Notes |
 |---|---|---|
-| **Git** | https://git-scm.com/download/win | Use default options |
-| **Node.js 20+** | https://nodejs.org (LTS) | Adds `node` + `npm` to PATH |
-| **pnpm** | `npm install -g pnpm` in a terminal | Package manager for this monorepo |
-| **GCP Service Account JSON** | GCP Console → IAM → Service Accounts | Download the key file for Vertex AI access |
+| **Git** | https://git-scm.com/download/win | Default options are fine |
+| **Node.js 20+ LTS** | https://nodejs.org | Adds `node` and `npm` to your PATH |
+| **pnpm** | Run `npm install -g pnpm` after Node | Package manager for this project |
+| **GCP Service Account JSON** | GCP Console → IAM → Service Accounts | Download the key file (.json) |
 
-> **Optional but recommended**: Use [Windows Terminal](https://aka.ms/terminal) for a better
-> terminal experience. All commands below work in PowerShell or Command Prompt.
+> Tip: Use [Windows Terminal](https://aka.ms/terminal). All commands work in
+> PowerShell or Command Prompt.
 
 ---
 
-## 1 — Clone the repository
+## Step-by-step setup (run once)
+
+### 1. Clone the repo
 
 ```powershell
 git clone <YOUR_REPO_URL> cdr-observability
 cd cdr-observability
 ```
 
----
-
-## 2 — Install dependencies
+### 2. Install all packages
 
 ```powershell
 pnpm install
 ```
 
-This installs all packages for every workspace (api-server, cw-recorder, shared libs, etc.).
+### 3. Fill in your credentials
 
----
+Open `artifacts\api-server\.env` in Notepad or VS Code and replace the placeholder
+values with your real credentials:
 
-## 3 — Configure environment variables
-
-```powershell
-# Copy the example file
-copy .env.example .env
+```
+artifacts\api-server\.env   ← edit this file
 ```
 
-Open `.env` in Notepad (or any editor) and fill in the required values:
+**What to fill in:**
 
 ```env
-# Port the API server listens on
-PORT=3000
+# Keep PORT=8080 — the frontend proxy is hardcoded to this port
+PORT=8080
 
-# CommonWell portal login
-CW_USERNAME=your-username@example.com
+# Your CommonWell portal login
+CW_USERNAME=your.email@company.com
 CW_PASSWORD=your-portal-password
 
-# GCP Vertex AI — paste the full contents of your service account JSON on ONE line
-GCP_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"..."}
+# Your GCP Service Account JSON — paste the entire JSON on ONE LINE
+GCP_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...@....iam.gserviceaccount.com",...}
 ```
 
-> **Tip — pasting JSON on one line**: Open your `.json` key file, copy everything,
-> then in PowerShell run:
-> ```powershell
-> $json = Get-Content "path\to\your-key.json" -Raw
-> $json -replace "`r`n","\n" -replace "`n","\n"
-> ```
-> Paste the output as the `GCP_SERVICE_ACCOUNT_JSON` value (keep it on a single line,
-> wrapped in double quotes if your shell requires it).
+**How to get the JSON onto one line in PowerShell:**
 
----
+```powershell
+# Run this in the folder where you saved your GCP key file
+$raw = Get-Content "your-key-file.json" -Raw
+$oneLine = $raw.Trim() -replace "`r`n", "\n" -replace "`n", "\n"
+Write-Output $oneLine
+# Copy the output and paste it as the GCP_SERVICE_ACCOUNT_JSON value in .env
+```
 
-## 4 — Install Playwright's Chromium browser
-
-The API server does this automatically on first `dev` start, but you can also run it
-manually upfront:
+### 4. Install Playwright's Chromium browser (one-time, ~150 MB)
 
 ```powershell
 npx --yes playwright install chromium
 ```
 
-This downloads ~150 MB of Chromium into your local Playwright cache. Only needed once.
-
 ---
 
-## 5 — Start the servers
+## Running the app (every time)
 
-Open **two separate terminal windows/tabs** in the project root.
+Open **two separate PowerShell windows** in the project root.
 
 ### Terminal 1 — API server
 
@@ -95,147 +98,102 @@ Open **two separate terminal windows/tabs** in the project root.
 pnpm --filter @workspace/api-server run dev
 ```
 
-Expected output:
+Wait until you see:
 ```
-Playwright is installing missing browsers...
-Server listening on port 3000
-Hourly monitor scheduler registered (every hour)
+Server listening on port 8080
 ```
 
-### Terminal 2 — React frontend (CW Recorder)
+### Terminal 2 — React frontend
 
 ```powershell
 pnpm --filter @workspace/cw-recorder run dev
 ```
 
-Expected output:
+Wait until you see:
 ```
-  VITE v6.x.x  ready in XXX ms
-
   ➜  Local:   http://localhost:5173/
 ```
 
----
+Then open **http://localhost:5173/** in your browser.
 
-## 6 — Open the app
-
-Navigate to **http://localhost:5173/** in your browser.
-
-> **Important**: The frontend proxies API calls to `http://localhost:3000` via Vite's
-> dev server. Both servers must be running for the app to work.
+> Both terminals must stay open while you use the app.
 
 ---
 
-## Using the PAR Demo
-
-1. Click **PAR Demo** in the top navigation.
-2. Choose a search mode:
-   - **Date Range** — pick a preset (last 24 h / 7 d / 30 d) or custom dates.
-   - **Transaction ID** — type a specific CW transaction ID and press Enter or click Run.
-3. Click **Run PAR Demo**.
-4. The browser navigates the CommonWell portal automatically.  
-   When prompted, enter the **6-digit OTP** sent to your email.
-5. Vertex AI (Gemini 2.5 Flash) summarises the results once extraction completes.
-
----
-
-## Windows-specific notes
-
-### PATH issues with `pnpm`
-
-If `pnpm` is not found after `npm install -g pnpm`, close and reopen your terminal
-(PATH is refreshed on new sessions). Alternatively:
-
-```powershell
-# Add to your PowerShell profile or run each session:
-$env:PATH += ";$env:APPDATA\npm"
-```
-
-### Long path errors (git clone / pnpm install)
-
-Enable long paths in Windows:
-
-```powershell
-# Run as Administrator
-git config --system core.longpaths true
-New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
-```
-
-### Playwright Chromium on Windows
-
-Playwright installs Chromium into `%LOCALAPPDATA%\ms-playwright`. If you see
-`Executable doesn't exist` errors, re-run:
-
-```powershell
-npx playwright install chromium
-```
-
-### Antivirus / Firewall
-
-Some antivirus tools block Playwright's Chromium from launching. Add an exclusion for:
-```
-%LOCALAPPDATA%\ms-playwright\
-```
-
-### Screenshots / Sessions directory
-
-On Windows, Playwright writes sessions to `%TEMP%\cw-sessions` and screenshots to
-`%TEMP%\cw-screenshots` by default (the app uses `os.tmpdir()` which resolves correctly
-on Windows).
-
----
-
-## Running both servers with a single command (optional)
-
-Install `concurrently` globally:
+## Optional: run both servers with one command
 
 ```powershell
 npm install -g concurrently
-```
-
-Then from the project root:
-
-```powershell
 concurrently `
   "pnpm --filter @workspace/api-server run dev" `
   "pnpm --filter @workspace/cw-recorder run dev"
 ```
 
-Or add this to the root `package.json` `scripts`:
+---
 
-```json
-"dev:local": "concurrently \"pnpm --filter @workspace/api-server run dev\" \"pnpm --filter @workspace/cw-recorder run dev\""
+## Using the PAR Demo (Transaction Monitoring)
+
+1. Click **PAR Demo** in the top navigation bar.
+2. Choose your search mode:
+   - **Date Range** — last 24 h / 7 d / 30 d, or pick custom dates.
+   - **Transaction ID** — type a specific CW transaction ID.
+3. Click **Run PAR Demo**.
+4. The browser opens and navigates CommonWell automatically.
+5. When prompted, enter the **6-digit OTP** that arrives in your email.
+6. Vertex AI (Gemini 2.5 Flash) summarises the results once done.
+
+---
+
+## Ports explained
+
+| Service | Port | Who sets it |
+|---|---|---|
+| API server | 8080 | `PORT=8080` in `artifacts/api-server/.env` |
+| React frontend | 5173 | Vite default (no config needed locally) |
+| Vite → API proxy | — | Hardcoded to `http://localhost:8080` in `vite.config.ts` |
+
+> **Important:** Do not change `PORT` in `.env` to anything other than `8080`.
+> The Vite proxy target is hardcoded. If you need a different port, you must also
+> change line 54 of `artifacts/cw-recorder/vite.config.ts`.
+
+---
+
+## Windows-specific fixes
+
+### `pnpm` not found after install
+
+```powershell
+# Restart PowerShell, or add npm global bin to PATH:
+$env:PATH += ";$env:APPDATA\npm"
 ```
 
-Then run `pnpm run dev:local`.
+### Long path errors on `pnpm install`
 
----
+```powershell
+# Run PowerShell as Administrator:
+git config --system core.longpaths true
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+# Then restart your terminal.
+```
 
-## Ports summary
+### Playwright Chromium `Executable doesn't exist`
 
-| Service | Default port | URL |
-|---|---|---|
-| API server | 3000 | http://localhost:3000/api/health |
-| CW Recorder (frontend) | 5173 | http://localhost:5173/ |
+```powershell
+npx playwright install chromium
+```
 
-Change `PORT=3000` in `.env` if 3000 is in use. The Vite proxy automatically picks up
-the `PORT` env var via `vite.config.ts`.
+Chromium is stored at: `%LOCALAPPDATA%\ms-playwright\`
 
----
+### Antivirus blocking Chromium
 
-## Environment variables quick reference
+Add an exclusion for `%LOCALAPPDATA%\ms-playwright\` in your antivirus settings.
 
-| Variable | Required | Description |
-|---|---|---|
-| `PORT` | Yes | API server port (default 3000) |
-| `CW_USERNAME` | Yes | CommonWell portal email |
-| `CW_PASSWORD` | Yes | CommonWell portal password |
-| `GCP_SERVICE_ACCOUNT_JSON` | Yes (for AI) | Full GCP service account JSON, single line |
-| `GCP_PROJECT_ID` | Alt. to JSON | Use instead of JSON when on GKE with Workload Identity |
-| `SESSION_MAX_AGE_HOURS` | No | Hours before re-auth required (default 24) |
-| `VERTEX_MODEL_ID` | No | Gemini model (default `gemini-2.5-flash`) |
-| `VERTEX_LOCATION` | No | GCP region (default `us-central1`) |
+### `PORT environment variable is required` error
+
+Your `.env` file is missing or in the wrong location.
+It must be at: `artifacts\api-server\.env`
+Make sure `PORT=8080` is in that file.
 
 ---
 
@@ -243,17 +201,32 @@ the `PORT` env var via `vite.config.ts`.
 
 | Symptom | Fix |
 |---|---|
-| `pnpm: command not found` | `npm install -g pnpm`, then restart terminal |
+| `pnpm: command not found` | `npm install -g pnpm` then restart terminal |
 | `Cannot find module '@workspace/...'` | Run `pnpm install` from the repo root |
-| `Error: browserType.launch: Executable doesn't exist` | `npx playwright install chromium` |
-| `fetch failed` / API not reachable | Ensure api-server is running on port 3000 |
-| OTP not arriving | Check your CW account email; ensure `CW_USERNAME` is correct |
-| Vertex AI `PERMISSION_DENIED` | Check `GCP_SERVICE_ACCOUNT_JSON` — ensure it's on one line with `\n` in the key |
-| Port 3000 already in use | Change `PORT=3001` in `.env`; also update `vite.config.ts` proxy target |
-| Long paths error on `pnpm install` | Enable Windows long paths (see above) |
+| `Executable doesn't exist` (Playwright) | `npx playwright install chromium` |
+| Blank page / "Cannot connect" at :5173 | Make sure the API server is running on 8080 |
+| OTP not arriving | Check your CW account email; verify `CW_USERNAME` is correct |
+| `PERMISSION_DENIED` from Vertex AI | Your JSON key is wrong or not on a single line in `.env` |
+| `PORT environment variable is required` | `.env` file is missing — check `artifacts\api-server\.env` |
+| Port 8080 already in use | Find the process: `netstat -ano \| findstr :8080` and kill it |
+
+---
+
+## File locations
+
+```
+cdr-observability\
+├── artifacts\
+│   ├── api-server\
+│   │   └── .env          ← your credentials go here
+│   └── cw-recorder\
+│       └── vite.config.ts  ← proxy target (localhost:8080)
+├── WINDOWS_LOCAL_RUN.md  ← this file
+└── pnpm-workspace.yaml
+```
 
 ---
 
 ## Stopping the servers
 
-Press **Ctrl+C** in each terminal window.
+Press **Ctrl+C** in each terminal.
