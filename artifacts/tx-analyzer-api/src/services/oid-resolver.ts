@@ -48,35 +48,57 @@ export function addToCache(oid: string, name: string): void {
 }
 
 export async function lookupOidFromPortal(oid: string): Promise<string | null> {
-  const { loadSession } = await import("./auth.js");
+  const { loadSession, loadEndpoints } = await import("./auth.js");
   const session = loadSession();
   if (!session) return null;
 
-  try {
-    const PORTAL_URL = process.env.CW_PORTAL_URL ?? "https://integration.commonwellalliance.lkopera.com";
-    const cookieHeader = session.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const PORTAL_URL = process.env.CW_PORTAL_URL ?? "https://integration.commonwellalliance.lkopera.com";
+  const cookieHeader = session.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const endpoints = loadEndpoints();
 
-    const response = await fetch(
-      `${PORTAL_URL}/Organizations/GetByOid?oid=${encodeURIComponent(oid)}`,
-      {
+  const candidateUrls: string[] = [];
+
+  if (endpoints?.orgLookup) {
+    candidateUrls.push(endpoints.orgLookup);
+  }
+  if (endpoints?.all) {
+    for (const e of endpoints.all) {
+      if (e.url.toLowerCase().includes("org") && !candidateUrls.includes(e.url)) {
+        candidateUrls.push(e.url);
+      }
+    }
+  }
+  candidateUrls.push(
+    `${PORTAL_URL}/Organizations/GetByOid`,
+    `${PORTAL_URL}/api/Organizations`,
+    `${PORTAL_URL}/Organizations/Search`,
+  );
+
+  for (const baseUrl of candidateUrls) {
+    try {
+      const url = baseUrl.includes("?") ? `${baseUrl}&oid=${encodeURIComponent(oid)}` : `${baseUrl}?oid=${encodeURIComponent(oid)}`;
+      const response = await fetch(url, {
         headers: {
           Cookie: cookieHeader,
           Accept: "application/json, */*",
           "X-Requested-With": "XMLHttpRequest",
         },
-      }
-    );
+      });
 
-    if (response.ok) {
-      const data = await response.json() as { name?: string; organizationName?: string; displayName?: string };
-      const name = data.name ?? data.organizationName ?? data.displayName;
-      if (name) {
-        addToCache(oid, name);
-        return name;
+      if (response.ok) {
+        const data = await response.json() as { name?: string; organizationName?: string; displayName?: string };
+        const name = data.name ?? data.organizationName ?? data.displayName;
+        if (name) {
+          addToCache(oid, name);
+          console.log(`[OidResolver] Resolved ${oid} → ${name} via ${baseUrl}`);
+          return name;
+        }
       }
+    } catch {
+      continue;
     }
-  } catch {
   }
+
   return null;
 }
 

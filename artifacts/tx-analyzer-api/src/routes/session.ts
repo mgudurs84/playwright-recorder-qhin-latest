@@ -4,6 +4,7 @@ import {
   submitOtp,
   getSessionStatus,
   getAuthState,
+  loadEndpoints,
 } from "../services/auth.js";
 
 export function registerSessionRoutes(app: Express): void {
@@ -32,9 +33,24 @@ export function registerSessionRoutes(app: Express): void {
     res.json(result);
   });
 
-  app.get("/api/session/status", (_req: Request, res: Response) => {
-    const status = getSessionStatus();
+  app.get("/api/session/status", async (_req: Request, res: Response) => {
+    const status = await getSessionStatus();
     const authState = getAuthState();
-    res.json({ ...status, authState });
+    const endpoints = loadEndpoints();
+    res.json({
+      ...status,
+      authState,
+      discoveryComplete: endpoints !== null,
+      discoveredAt: endpoints?.discoveredAt,
+    });
+  });
+
+  app.get("/api/session/endpoints", (_req: Request, res: Response) => {
+    const endpoints = loadEndpoints();
+    if (!endpoints) {
+      res.status(404).json({ error: "No discovery data yet — run login first" });
+      return;
+    }
+    res.json(endpoints);
   });
 }

@@ -5,6 +5,7 @@ import os from "os";
 
 const SCREENSHOTS_DIR = path.join(os.tmpdir(), "tx-screenshots");
 const SESSION_FILE = path.resolve(process.env.SESSION_FILE ?? "data/session.json");
+const ENDPOINTS_FILE = path.resolve(process.env.ENDPOINTS_FILE ?? "data/endpoints.json");
 const PORTAL_URL = process.env.CW_PORTAL_URL ?? "https://integration.commonwellalliance.lkopera.com";
 const SESSION_MAX_AGE_HOURS = parseInt(process.env.SESSION_MAX_AGE_HOURS ?? "24", 10);
 const DEFAULT_TIMEOUT = 60000;
@@ -31,6 +32,21 @@ export interface SessionData {
   };
   savedAt: string;
   expiresAt: string;
+}
+
+export interface EndpointEntry {
+  url: string;
+  method: string;
+  contentType: string;
+  trigger: string;
+}
+
+export interface DiscoveredEndpoints {
+  detailHtml?: string;
+  detailJson?: string;
+  orgLookup?: string;
+  all: EndpointEntry[];
+  discoveredAt: string;
 }
 
 export interface LoginResult {
@@ -109,10 +125,120 @@ export function loadSession(): SessionData | null {
   }
 }
 
-export function getSessionStatus(): { valid: boolean; expiresAt?: string } {
+export function loadEndpoints(): DiscoveredEndpoints | null {
+  if (!existsSync(ENDPOINTS_FILE)) return null;
+  try {
+    return JSON.parse(readFileSync(ENDPOINTS_FILE, "utf8")) as DiscoveredEndpoints;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validate session by making a real authenticated HEAD request to the portal homepage.
+ * Returns false if the session is expired, invalid, or redirects to a login page.
+ */
+export async function probePortalSession(cookies: CookieEntry[]): Promise<boolean> {
+  try {
+    const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const res = await fetch(`${PORTAL_URL}/`, {
+      method: "HEAD",
+      headers: {
+        Cookie: cookieHeader,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+      redirect: "manual",
+    });
+    const loc = res.headers.get("location") ?? "";
+    const isRedirectedToLogin =
+      loc.toLowerCase().includes("login") ||
+      loc.toLowerCase().includes("signin") ||
+      res.status === 302 || res.status === 301;
+    if (isRedirectedToLogin) {
+      console.log("[AuthService] Portal probe: session expired (redirect to login)");
+      return false;
+    }
+    console.log(`[AuthService] Portal probe: HTTP ${res.status} — session valid`);
+    return true;
+  } catch (err) {
+    console.warn("[AuthService] Portal probe failed:", (err as Error).message);
+    return false;
+  }
+}
+
+export async function getSessionStatus(): Promise<{ valid: boolean; expiresAt?: string }> {
   const session = loadSession();
   if (!session) return { valid: false };
+
+  const liveValid = await probePortalSession(session.cookies);
+  if (!liveValid) return { valid: false };
+
   return { valid: true, expiresAt: session.expiresAt };
+}
+
+/**
+ * Run network discovery after login: navigate to TransactionLogs, intercept all XHR/fetch
+ * calls (including row-expand), and save the discovered endpoint map to data/endpoints.json.
+ */
+async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
+  const captured: EndpointEntry[] = [];
+
+  p.on("request", (req) => {
+    const url = req.url();
+    const method = req.method();
+    const headers = req.headers();
+    const isXhr =
+      headers["x-requested-with"] === "XMLHttpRequest" ||
+      (headers["accept"] ?? "").includes("application/json") ||
+      (headers["accept"] ?? "").includes("text/html") ||
+      method === "POST";
+
+    if (isXhr && url.startsWith(PORTAL_URL)) {
+      const contentType = headers["content-type"] ?? "";
+      const trigger = url.includes("Detail") ? "row-expand" : url.includes("Load") ? "partial-view" : "page-load";
+      captured.push({ url, method, contentType, trigger });
+    }
+  });
+
+  try {
+    const txUrl = `${PORTAL_URL}/TransactionLogs/index`;
+    await p.goto(txUrl, { waitUntil: "networkidle", timeout: 60000 });
+    await p.waitForTimeout(3000);
+
+    const rows = p.locator("tr.k-master-row, tr[data-uid], tbody tr").first();
+    if ((await rows.count()) > 0) {
+      try {
+        await rows.click({ timeout: 5000 });
+        await p.waitForTimeout(2000);
+      } catch {
+        console.log("[Discovery] Could not expand a row — may need real transaction data");
+      }
+    }
+  } catch (err) {
+    console.warn("[Discovery] Navigation failed:", (err as Error).message);
+  }
+
+  const detailEntry = captured.find(
+    (e) => e.url.includes("DetailPartialView") || e.url.includes("Detail") && e.method === "POST"
+  );
+  const jsonEntry = captured.find(
+    (e) => e.url.includes("json") || e.url.includes("data") && e.contentType.includes("json")
+  );
+  const orgEntry = captured.find(
+    (e) => e.url.toLowerCase().includes("org") || e.url.toLowerCase().includes("organization")
+  );
+
+  const discovered: DiscoveredEndpoints = {
+    detailHtml: detailEntry?.url,
+    detailJson: jsonEntry?.url,
+    orgLookup: orgEntry?.url,
+    all: captured,
+    discoveredAt: new Date().toISOString(),
+  };
+
+  writeFileSync(ENDPOINTS_FILE, JSON.stringify(discovered, null, 2), "utf8");
+  console.log(`[Discovery] Saved ${captured.length} endpoints to ${ENDPOINTS_FILE}`);
+  return discovered;
 }
 
 export async function login(username: string, password: string): Promise<LoginResult> {
@@ -130,6 +256,9 @@ export async function login(username: string, password: string): Promise<LoginRe
     if (!hasLoginForm) {
       currentState = "authenticated";
       const expiresAt = await saveSession();
+      void runNetworkDiscovery(p).catch((e) =>
+        console.warn("[AuthService] Background discovery error:", (e as Error).message)
+      );
       return { success: true, needsOtp: false, message: "Already authenticated", expiresAt };
     }
 
@@ -157,6 +286,9 @@ export async function login(username: string, password: string): Promise<LoginRe
     if (isLoggedIn) {
       currentState = "authenticated";
       const expiresAt = await saveSession();
+      void runNetworkDiscovery(p).catch((e) =>
+        console.warn("[AuthService] Background discovery error:", (e as Error).message)
+      );
       return { success: true, needsOtp: false, message: "Login successful", expiresAt };
     }
 
@@ -182,6 +314,9 @@ export async function submitOtp(otp: string): Promise<OtpResult> {
     if (!stillOnOtp) {
       currentState = "authenticated";
       const expiresAt = await saveSession();
+      void runNetworkDiscovery(p).catch((e) =>
+        console.warn("[AuthService] Background discovery error:", (e as Error).message)
+      );
       return { success: true, message: "OTP accepted", expiresAt };
     }
 
