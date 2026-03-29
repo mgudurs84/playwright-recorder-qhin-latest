@@ -50,7 +50,7 @@ export function BatchMode({ screenshotsEnabled }: BatchModeProps) {
     setError("");
     setResults([]);
     try {
-      const res = await api.batch(file);
+      const res = await api.batch(file, screenshotsEnabled);
       setResults(res.results);
     } catch (err) {
       setError((err as Error).message);

@@ -21,6 +21,8 @@ export interface SessionStatus {
   valid: boolean;
   expiresAt?: string;
   authState: string;
+  discoveryComplete?: boolean;
+  discoveredAt?: string;
 }
 
 export interface LoginResult {
@@ -53,6 +55,7 @@ export interface TransactionDetail {
   duration?: string;
   rawFields: Record<string, string>;
   oids: string[];
+  endpointUsed?: string;
 }
 
 export interface AiAnalysis {
@@ -70,6 +73,7 @@ export interface AnalysisResult {
   detail: TransactionDetail;
   organizations: Array<{ oid: string; name: string }>;
   ai: AiAnalysis;
+  screenshotUrl?: string;
   error?: string;
 }
 
@@ -93,15 +97,16 @@ export const api = {
       body: JSON.stringify({ otp }),
     }),
 
-  analyze: (transactionId: string) =>
+  analyze: (transactionId: string, captureScreenshot = false) =>
     apiRequest<AnalysisResult>("/api/analyze", {
       method: "POST",
-      body: JSON.stringify({ transactionId }),
+      body: JSON.stringify({ transactionId, captureScreenshot }),
     }),
 
-  batch: async (file: File): Promise<BatchResult> => {
+  batch: async (file: File, captureScreenshot = false): Promise<BatchResult> => {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("captureScreenshot", captureScreenshot ? "true" : "false");
     const url = `${BASE}/api/batch`;
     const res = await fetch(url, { method: "POST", body: formData });
     if (!res.ok) {

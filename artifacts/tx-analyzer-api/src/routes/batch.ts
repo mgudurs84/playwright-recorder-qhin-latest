@@ -23,7 +23,10 @@ function parseTransactionIds(csvText: string): string[] {
     .filter(Boolean);
 }
 
-async function runBatch(ids: string[]): Promise<Array<AnalysisResult & { error?: string }>> {
+async function runBatch(
+  ids: string[],
+  captureScreenshot = false
+): Promise<Array<AnalysisResult & { error?: string }>> {
   const results: Array<AnalysisResult & { error?: string }> = [];
 
   for (let i = 0; i < ids.length; i += CONCURRENCY) {
@@ -31,7 +34,7 @@ async function runBatch(ids: string[]): Promise<Array<AnalysisResult & { error?:
     const chunkResults = await Promise.all(
       chunk.map(async (id) => {
         try {
-          return await analyzeTransaction(id);
+          return await analyzeTransaction(id, captureScreenshot);
         } catch (err) {
           return {
             transactionId: id,
@@ -63,6 +66,9 @@ export function registerBatchRoutes(app: Express): void {
     upload.single("file"),
     async (req: Request, res: Response) => {
       let ids: string[] = [];
+      const captureScreenshot =
+        (req.body as { captureScreenshot?: string | boolean })?.captureScreenshot === true ||
+        (req.body as { captureScreenshot?: string | boolean })?.captureScreenshot === "true";
 
       if (req.file) {
         const csvText = req.file.buffer.toString("utf8");
@@ -81,10 +87,10 @@ export function registerBatchRoutes(app: Express): void {
         return;
       }
 
-      console.log(`[Batch] Processing ${ids.length} transactions`);
+      console.log(`[Batch] Processing ${ids.length} transactions (screenshot: ${captureScreenshot})`);
 
       try {
-        const results = await runBatch(ids);
+        const results = await runBatch(ids, captureScreenshot);
         res.json({ count: results.length, results });
       } catch (err) {
         res.status(500).json({ error: (err as Error).message });

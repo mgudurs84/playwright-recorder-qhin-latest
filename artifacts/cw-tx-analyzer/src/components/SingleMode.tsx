@@ -18,7 +18,7 @@ export function SingleMode({ screenshotsEnabled }: SingleModeProps) {
     setError("");
     setResult(null);
     try {
-      const res = await api.analyze(txId.trim());
+      const res = await api.analyze(txId.trim(), screenshotsEnabled);
       setResult(res);
     } catch (err) {
       setError((err as Error).message);

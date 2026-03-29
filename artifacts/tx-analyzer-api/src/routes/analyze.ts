@@ -2,6 +2,7 @@ import { type Express, type Request, type Response } from "express";
 import { generateText } from "ai";
 import { fetchTransactionDetail, type TransactionDetail } from "../services/direct-fetch.js";
 import { resolveOidsWithLookup } from "../services/oid-resolver.js";
+import { takeScreenshot } from "../services/auth.js";
 import { createVertexModel } from "../lib/vertex.js";
 
 export interface AnalysisResult {
@@ -17,6 +18,7 @@ export interface AnalysisResult {
     severity: "low" | "medium" | "high" | "critical";
     resolution: string;
   };
+  screenshotUrl?: string;
   error?: string;
 }
 
@@ -63,8 +65,15 @@ Respond ONLY with a valid JSON object in this exact format (no markdown, no code
 }`;
 }
 
-async function analyzeTransaction(transactionId: string): Promise<AnalysisResult> {
-  const detail = await fetchTransactionDetail(transactionId);
+export async function analyzeTransaction(
+  transactionId: string,
+  captureScreenshot = false
+): Promise<AnalysisResult> {
+  const [detail, screenshotUrl] = await Promise.all([
+    fetchTransactionDetail(transactionId),
+    captureScreenshot ? takeScreenshot(transactionId) : Promise.resolve(undefined),
+  ]);
+
   const orgs = await resolveOidsWithLookup(detail.oids);
 
   let ai: AnalysisResult["ai"];
@@ -99,19 +108,25 @@ async function analyzeTransaction(transactionId: string): Promise<AnalysisResult
     };
   }
 
-  return { transactionId, detail, organizations: orgs, ai };
+  const result: AnalysisResult = { transactionId, detail, organizations: orgs, ai };
+  if (screenshotUrl) result.screenshotUrl = screenshotUrl;
+  return result;
 }
 
 export function registerAnalyzeRoutes(app: Express): void {
   app.post("/api/analyze", async (req: Request, res: Response) => {
-    const { transactionId } = req.body as { transactionId?: string };
+    const { transactionId, captureScreenshot } = req.body as {
+      transactionId?: string;
+      captureScreenshot?: boolean;
+    };
+
     if (!transactionId?.trim()) {
       res.status(400).json({ error: "transactionId is required" });
       return;
     }
 
     try {
-      const result = await analyzeTransaction(transactionId.trim());
+      const result = await analyzeTransaction(transactionId.trim(), captureScreenshot === true);
       res.json(result);
     } catch (err) {
       const message = (err as Error).message;
@@ -120,5 +135,3 @@ export function registerAnalyzeRoutes(app: Express): void {
     }
   });
 }
-
-export { analyzeTransaction };

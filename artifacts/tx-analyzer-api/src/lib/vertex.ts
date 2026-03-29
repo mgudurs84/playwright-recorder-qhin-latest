@@ -1,7 +1,6 @@
 import { createVertex } from "@ai-sdk/google-vertex";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createVertexModel(): any {
+export function createVertexModel() {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
   const projectId = process.env.GCP_PROJECT_ID;
   const location = process.env.VERTEX_LOCATION || "us-central1";

@@ -14,7 +14,7 @@ interface ResultCardProps {
 }
 
 export function ResultCard({ result, screenshotsEnabled = false }: ResultCardProps) {
-  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(result.screenshotUrl ?? null);
   const [loadingScreenshot, setLoadingScreenshot] = useState(false);
   const [expanded, setExpanded] = useState(true);
 
