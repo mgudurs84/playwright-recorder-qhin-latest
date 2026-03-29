@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/cw-tx-analyzer/"
+title = "CW Transaction Analyzer"
+version = "1.0.0"
+id = "artifacts/cw-tx-analyzer"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/cw-tx-analyzer/" ]
+localPort = 19985
+
+[services.development]
+run = "pnpm --filter @workspace/cw-tx-analyzer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/cw-tx-analyzer", "run", "build" ]
+publicDir = "artifacts/cw-tx-analyzer/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19985"
+BASE_PATH = "/cw-tx-analyzer/"

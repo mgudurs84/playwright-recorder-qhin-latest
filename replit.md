@@ -87,6 +87,36 @@ A chat-based Playwright automation tool at `artifacts/cw-recorder/`. Key feature
 - `CW_USERNAME` / `CW_PASSWORD` — CommonWell portal credentials
 - `GCP_SERVICE_ACCOUNT_JSON` — Required for Vertex AI model
 
+## CW Transaction Analyzer App
+
+A standalone transaction analysis tool at `artifacts/cw-tx-analyzer/` (frontend) + `artifacts/tx-analyzer-api/` (API server). Key features:
+
+- **Playwright auth**: Headless browser login + OTP → session cookies saved to `data/session.json`
+- **Direct HTTP**: Calls `POST /TransactionLogs/LoadTransactionLogsDetailPartialView` using saved cookies (no browser needed after login)
+- **HTML parsing**: `node-html-parser` extracts all transaction fields and OID values from portal HTML
+- **OID resolver**: Resolves OIDs to org names via cache (`data/oid-cache.json`) + live portal lookup
+- **Vertex AI L1/L2 analysis**: Gemini 2.5 Flash generates structured JSON (summary, rootCause, l1Actions, l2Actions, severity, resolution)
+- **Batch CSV upload**: Up to 500 transactions at concurrency 5, with full AI analysis per row
+- **CSV export**: Batch results exported with all AI columns appended
+- **Screenshot toggle**: Playwright navigates to transaction detail for a full-page screenshot
+- **CVS Health themed UI**: Red header, clean white cards, single/batch tab modes
+
+### TX Analyzer Routes (`/api/*`)
+- `POST /api/session/login` — Playwright login + OTP flow
+- `POST /api/session/otp` — OTP submission
+- `GET /api/session/status` — Check session validity
+- `POST /api/analyze` — Single transaction ID → full analysis
+- `POST /api/batch` — CSV file upload → batch analysis
+- `POST /api/screenshot` — Full-page portal screenshot
+
+### Environment Variables (tx-analyzer-api)
+- Port: 8000 (distinct from api-server on 8080)
+- `CW_USERNAME` / `CW_PASSWORD` — CommonWell portal credentials
+- `CW_PORTAL_URL` — Portal base URL
+- `GCP_PROJECT_ID` (ADC) or `GCP_SERVICE_ACCOUNT_JSON` — Vertex AI auth
+- `VERTEX_MODEL_ID`, `VERTEX_LOCATION` — Gemini model config
+- `SESSION_MAX_AGE_HOURS` — Session TTL (default 24h)
+
 ## Structure
 
 ```text
@@ -95,7 +125,9 @@ artifacts-monorepo/
 │   ├── api-server/         # Express API server (+ CopilotKit runtime + Vertex AI)
 │   │   └── src/skills/     # YAML skill files + loader for agent prompts
 │   ├── autoresearch/       # React + Vite frontend with CopilotKit chat UI
-│   └── cw-recorder/        # React + Vite CW Recorder chat UI
+│   ├── cw-recorder/        # React + Vite CW Recorder chat UI
+│   ├── tx-analyzer-api/    # CW Transaction Analyzer API server (port 8000)
+│   └── cw-tx-analyzer/     # CW Transaction Analyzer React frontend
 ├── lib/                    # Shared libraries
 │   ├── api-spec/           # OpenAPI spec + Orval codegen config
 │   ├── api-client-react/   # Generated React Query hooks

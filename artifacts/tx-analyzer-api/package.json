@@ -1,0 +1,31 @@
+{
+  "name": "@workspace/tx-analyzer-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "playwright install chromium && cross-env NODE_ENV=development tsx ./src/index.ts",
+    "build": "tsx ./build.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/google-vertex": "^4.0.80",
+    "ai": "^6.0.116",
+    "cors": "^2",
+    "dotenv": "^16.5.0",
+    "express": "^5",
+    "multer": "^2.0.1",
+    "node-html-parser": "^7.0.1",
+    "playwright": "^1.58.2",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^1.4.12",
+    "@types/node": "catalog:",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.27.3",
+    "tsx": "catalog:"
+  }
+}
