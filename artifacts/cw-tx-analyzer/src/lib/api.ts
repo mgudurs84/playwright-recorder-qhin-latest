@@ -1,5 +1,11 @@
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+/** Convert a server-relative URL like /api/screenshots/x.png to a proxy-routed URL */
+export const toProxiedUrl = (serverPath: string): string => {
+  if (!serverPath.startsWith("/")) return serverPath;
+  return `${BASE}${serverPath}`;
+};
+
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {

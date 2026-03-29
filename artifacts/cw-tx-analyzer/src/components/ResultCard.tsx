@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type AnalysisResult } from "@/lib/api";
+import { api, toProxiedUrl, type AnalysisResult } from "@/lib/api";
 
 const SEVERITY_COLORS: Record<string, string> = {
   low: "bg-green-100 text-green-800 border-green-200",
@@ -169,7 +169,7 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
                 <div>
                   <p className="text-xs text-muted-foreground mb-2">Portal Screenshot</p>
                   <img
-                    src={screenshotUrl}
+                    src={toProxiedUrl(screenshotUrl)}
                     alt={`Screenshot for ${result.transactionId}`}
                     className="w-full rounded-lg border border-border shadow-sm"
                   />
