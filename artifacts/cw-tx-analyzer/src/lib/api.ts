@@ -114,10 +114,10 @@ export const api = {
       body: JSON.stringify({ otp }),
     }),
 
-  analyze: (transactionId: string, captureScreenshot = false) =>
+  analyze: (transactionId: string, captureScreenshot = false, usePlaywright = false) =>
     apiRequest<AnalysisResult>("/api/analyze", {
       method: "POST",
-      body: JSON.stringify({ transactionId, captureScreenshot }),
+      body: JSON.stringify({ transactionId, captureScreenshot, usePlaywright }),
     }),
 
   analyzeLogs: (logText: string, transactionId?: string) =>

@@ -1,6 +1,7 @@
 import { type Express, type Request, type Response } from "express";
 import { generateText } from "ai";
 import { fetchTransactionDetail, type TransactionDetail } from "../services/direct-fetch.js";
+import { fetchTransactionDetailPlaywright } from "../services/playwright-fetch.js";
 import { resolveOidsWithLookup } from "../services/oid-resolver.js";
 import { takeScreenshot } from "../services/auth.js";
 import { createVertexModel } from "../lib/vertex.js";
@@ -191,10 +192,15 @@ Respond ONLY with a valid JSON object — no markdown, no code blocks:
 
 export async function analyzeTransaction(
   transactionId: string,
-  captureScreenshot = false
+  captureScreenshot = false,
+  usePlaywright = false
 ): Promise<AnalysisResult> {
+  console.log(`[Analyze] Mode: ${usePlaywright ? "Playwright" : "Direct API"} for ${transactionId}`);
+
   const [detail, screenshotUrl] = await Promise.all([
-    fetchTransactionDetail(transactionId),
+    usePlaywright
+      ? fetchTransactionDetailPlaywright(transactionId)
+      : fetchTransactionDetail(transactionId),
     captureScreenshot ? takeScreenshot(transactionId) : Promise.resolve(undefined),
   ]);
 
@@ -638,9 +644,10 @@ async function analyzeLogText(
 export function registerAnalyzeRoutes(app: Express): void {
   // Main analysis endpoint
   app.post("/api/analyze", async (req: Request, res: Response) => {
-    const { transactionId, captureScreenshot } = req.body as {
+    const { transactionId, captureScreenshot, usePlaywright } = req.body as {
       transactionId?: string;
       captureScreenshot?: boolean;
+      usePlaywright?: boolean;
     };
 
     if (!transactionId?.trim()) {
@@ -651,7 +658,8 @@ export function registerAnalyzeRoutes(app: Express): void {
     try {
       const result = await analyzeTransaction(
         transactionId.trim(),
-        captureScreenshot === true
+        captureScreenshot === true,
+        usePlaywright === true
       );
       res.json(result);
     } catch (err) {
