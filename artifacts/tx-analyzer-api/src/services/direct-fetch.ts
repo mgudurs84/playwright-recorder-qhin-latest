@@ -95,8 +95,14 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     // Reject if key is a UUID / transaction-ID hex string
     if (/^[0-9a-f]{16,}$/i.test(key)) return;
 
-    // Reject single- or double-char keys (likely URL param fragments)
-    if (key.length <= 2) return;
+    // Reject short lowercase-only keys — almost always URL query params (dir, page, sort, field)
+    if (key.length <= 5 && /^[a-z]+$/.test(key)) return;
+
+    // Reject URI scheme prefixes leaking as keys (urn, oid, http, https, ftp, mailto)
+    if (/^(urn|oid|http|https|ftp|mailto)$/i.test(key)) return;
+
+    // Reject values that are themselves labels (end with ":")
+    if (val.endsWith(":")) return;
 
     // Reject values that look like entire section text (contain 3+ "Word: value" pairs)
     const inlinePairs = (val.match(/\b\w[\w ]{1,30}:\s+\S/g) ?? []).length;
