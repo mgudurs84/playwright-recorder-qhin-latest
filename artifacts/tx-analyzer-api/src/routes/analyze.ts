@@ -284,57 +284,216 @@ function parseLogLines(text: string): LogEntry[] {
   return entries;
 }
 
+/**
+ * Pre-compute key statistics from log lines server-side so that Gemini
+ * cannot hallucinate counts even when the log contains hundreds of identical error lines.
+ */
+function computeLogStats(entries: LogEntry[]): {
+  finalDocumentsRetrieved: number | null;
+  finalDocsInFanout: number | null;
+  fanoutOrgCount: number | null;
+  patientSearchFanoutCount: number | null;
+  patientsFound: number | null;
+  perOrgDocResults: Array<{ org: string; docsFound: number; status: string; error?: string }>;
+  perOrgPatientResults: Array<{ org: string; patientsFound: number; status: string; error?: string }>;
+  errorTypes: Record<string, number>;
+  overallStatus: string | null;
+  durationMs: number | null;
+} {
+  let finalDocumentsRetrieved: number | null = null;
+  let finalDocsInFanout: number | null = null;
+  let fanoutOrgCount: number | null = null;
+  let patientSearchFanoutCount: number | null = null;
+  let patientsFound: number | null = null;
+  let overallStatus: string | null = null;
+  const perOrgDocResults: Array<{ org: string; docsFound: number; status: string; error?: string }> = [];
+  const perOrgPatientResults: Array<{ org: string; patientsFound: number; status: string; error?: string }> = [];
+  const errorTypes: Record<string, number> = {};
+
+  for (const entry of entries) {
+    const msg = entry.message;
+
+    // "Completed brokered document search with X documents retrieved" — the authoritative deduplicated total
+    const finalDocMatch = msg.match(/Completed brokered document search with (\d+) documents? retrieved/i);
+    if (finalDocMatch) finalDocumentsRetrieved = parseInt(finalDocMatch[1], 10);
+
+    // "Completed fanout document search request with status 'X', 'Y' documents, Z errors"
+    const fanoutDocMatch = msg.match(/Completed fanout document search.*?'(\d+)' documents.*?(\d+) errors/i);
+    if (fanoutDocMatch) finalDocsInFanout = parseInt(fanoutDocMatch[1], 10);
+
+    // "Retrieved N organizations for fanout"
+    const fanoutCountMatch = msg.match(/Retrieved (\d+) organizations for fanout/i);
+    if (fanoutCountMatch) fanoutOrgCount = parseInt(fanoutCountMatch[1], 10);
+
+    // "Completed fanout patient search. In N organizations X patients were found"
+    const patSearchMatch = msg.match(/Completed fanout patient search.*In (\d+) organizations (\d+) patients? were found/i);
+    if (patSearchMatch) {
+      patientSearchFanoutCount = parseInt(patSearchMatch[1], 10);
+      patientsFound = parseInt(patSearchMatch[2], 10);
+    }
+
+    // Per-org: document search request complete
+    const docCompleteMatch = msg.match(/document search request complete to target organization "([^"]+)".*Status: (\w+).*documents found: (\d+).*error details: "([^"]*)"/i);
+    if (docCompleteMatch) {
+      perOrgDocResults.push({
+        org: docCompleteMatch[1],
+        status: docCompleteMatch[2],
+        docsFound: parseInt(docCompleteMatch[3], 10),
+        error: docCompleteMatch[4] || undefined,
+      });
+    }
+
+    // Per-org: patient search request complete
+    const patCompleteMatch = msg.match(/patient search request complete to target organization "([^"]+)".*Status: (\w+).*patients found: (\d+).*error details: "([^"]*)"/i);
+    if (patCompleteMatch) {
+      perOrgPatientResults.push({
+        org: patCompleteMatch[1],
+        status: patCompleteMatch[2],
+        patientsFound: parseInt(patCompleteMatch[3], 10),
+        error: patCompleteMatch[4] || undefined,
+      });
+    }
+
+    // Track distinct error types from both "failure" lines and "error details" fields
+    const errorTypeMatch = msg.match(/\[([A-Za-z]+(?:Error|Failure|Fault|Timeout|Organization|Gateway|Validation)[^\]]*)\]/i);
+    if (errorTypeMatch) {
+      const type = errorTypeMatch[1].trim();
+      errorTypes[type] = (errorTypes[type] ?? 0) + 1;
+    }
+
+    // Overall status line
+    const statusMatch = msg.match(/Response completed|PartialSuccess|Successful|Failed/i);
+    if (statusMatch && !overallStatus) overallStatus = statusMatch[0];
+  }
+
+  // Duration: first ts to last ts
+  let durationMs: number | null = null;
+  if (entries.length >= 2) {
+    const parseTs = (ts: string) => {
+      const m = ts.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)/);
+      if (!m) return null;
+      return new Date(`${m[3]}-${m[1]}-${m[2]}T${m[4]}:${m[5]}:${m[6]}.${m[7]}Z`).getTime();
+    };
+    const t0 = parseTs(entries[0].timestamp);
+    const t1 = parseTs(entries[entries.length - 1].timestamp);
+    if (t0 && t1) durationMs = t1 - t0;
+  }
+
+  return {
+    finalDocumentsRetrieved,
+    finalDocsInFanout,
+    fanoutOrgCount,
+    patientSearchFanoutCount,
+    patientsFound,
+    perOrgDocResults,
+    perOrgPatientResults,
+    errorTypes,
+    overallStatus,
+    durationMs,
+  };
+}
+
 function buildLogPrompt(transactionId: string, logText: string, orgs: Array<{ oid: string; name: string }>): string {
   const orgLines = orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (none resolved)";
 
-  // Summarize errors for the prompt so Gemini doesn't have to scan 100+ lines
   const entries = parseLogLines(logText);
-  const errors = entries.filter((e) => e.level === "Error" || e.level === "Warning");
-  const errorSummary = errors.length
-    ? errors.slice(0, 30).map((e) => `  [${e.level}][${e.component}] ${e.message}`).join("\n")
-    : "  (none)";
+  const stats = computeLogStats(entries);
+
+  // Build the pre-computed facts block — Gemini MUST use these numbers, not re-derive them
+  const perOrgDocSummary = stats.perOrgDocResults.length
+    ? stats.perOrgDocResults
+        .map((r) => `    ${r.org}: ${r.docsFound} doc(s) — ${r.status}${r.error ? ` — ${r.error}` : ""}`)
+        .join("\n")
+    : "    (none recorded)";
+
+  const perOrgPatSummary = stats.perOrgPatientResults.length
+    ? stats.perOrgPatientResults
+        .map((r) => `    ${r.org}: ${r.patientsFound} patient(s) — ${r.status}${r.error ? ` — ${r.error}` : ""}`)
+        .join("\n")
+    : "    (none recorded)";
+
+  const errorTypeSummary = Object.entries(stats.errorTypes)
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => `    [${type}]: ${count} occurrence(s)`)
+    .join("\n") || "    (none)";
+
+  // Collect distinct error messages from non-empty Reason fields
+  const uniqueErrors = [
+    ...new Set(
+      entries
+        .filter((e) => e.level === "Error" || e.level === "Warning")
+        .map((e) => e.message)
+        .filter((m) => {
+          const r = m.match(/Reason: "([^"]+)"/);
+          return r && r[1].trim().length > 0;
+        })
+        .slice(0, 20)
+    ),
+  ];
+  const distinctErrorMessages = uniqueErrors.length
+    ? uniqueErrors.map((m) => `    ${m}`).join("\n")
+    : "    (see error types above)";
 
   const capText = logText.length > 18000 ? logText.slice(0, 18000) + "\n...[truncated]" : logText;
 
   return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
 
-Below are the RAW TRANSACTION LOG LINES for transaction ID "${transactionId}".
-The format is: Timestamp[TAB]Level[TAB]Component[TAB]Message
-Levels: Information, Warning, Error
+IMPORTANT: The following COMPUTED STATISTICS were extracted server-side directly from the log lines.
+These numbers are authoritative. Do NOT re-count or re-derive them — use them exactly as stated.
 
---- FULL LOG ---
+=== COMPUTED FACTS (DO NOT DEVIATE FROM THESE NUMBERS) ===
+TRANSACTION ID: ${transactionId}
+FINAL DOCUMENTS RETRIEVED (deduplicated, authoritative): ${stats.finalDocumentsRetrieved ?? "not found in log"}
+TOTAL DOCUMENTS IN FANOUT (before dedup): ${stats.finalDocsInFanout ?? "not found in log"}
+PATIENT SEARCH FANOUT ORG COUNT: ${stats.patientSearchFanoutCount ?? "not found in log"}
+PATIENTS FOUND (patient search): ${stats.patientsFound ?? "not found in log"}
+DOCUMENT SEARCH FANOUT ORG COUNT (from MPI): ${stats.fanoutOrgCount ?? "not found in log"}
+TOTAL DURATION: ${stats.durationMs != null ? `${stats.durationMs}ms` : "unknown"}
+OVERALL STATUS: ${stats.overallStatus ?? "unknown"}
+
+PER-ORG DOCUMENT SEARCH RESULTS (from log):
+${perOrgDocSummary}
+
+PER-ORG PATIENT SEARCH RESULTS (from log):
+${perOrgPatSummary}
+
+ERROR TYPES (count):
+${errorTypeSummary}
+
+DISTINCT ERROR MESSAGES (up to 20, non-empty reasons only):
+${distinctErrorMessages}
+=== END COMPUTED FACTS ===
+
+--- FULL LOG (for context only — numbers above are authoritative) ---
 ${capText}
 --- END LOG ---
-
-ERROR / WARNING SUMMARY (first 30):
-${errorSummary}
 
 OID RESOLUTION:
 ${orgLines}
 
-INSTRUCTIONS:
-1. Identify the transaction type (patient search, document query, document retrieve, etc.).
-2. Identify EVERY organization involved — requester, broker, all fanout targets — and their roles.
-3. List all errors and classify them (timeout, inactive org, SSL, registry error, audience validation, unknown gateway, etc.).
-4. Determine overall transaction status (success / partial success / failure).
-5. Describe the end-to-end data brokering chain.
-6. Provide L1/L2 support analysis.
+INSTRUCTIONS — use the COMPUTED FACTS above for all counts and numbers:
+1. State the exact document count from "FINAL DOCUMENTS RETRIEVED" above — never guess from individual log lines.
+2. Identify EVERY organization involved: requester, broker, fanout targets, which ones succeeded, which failed and why.
+3. Classify every distinct error type (timeout, inactive org, SSL, registry error, audience validation, unknown gateway, etc.).
+4. Determine overall transaction status using the computed facts.
+5. Describe the end-to-end brokering chain with exact counts.
+6. Provide specific L1/L2 support actions — name each org with errors by OID, state the error type and recommended fix.
 7. Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "3-4 sentence description: operation type, requesting org, broker, fanout org count, documents/patients found, overall outcome",
+  "summary": "3-4 sentence description: operation type, requesting org, broker, patient search fanout (N orgs, X patients found), document search fanout (N orgs, Y docs total, Z deduplicated), overall outcome",
   "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
-  "fanoutOrgCount": "exact number from logs e.g. '104 organizations' or '14 (TEFCA)' or '1 (direct)'",
-  "documentsFound": "e.g. '3 documents' or '0' or '1 patient matched'",
-  "durationMs": "total duration from first to last log timestamp, e.g. '2044ms'",
-  "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 orgs (fanout)'",
-  "rootCause": "Primary root cause of any errors, or 'No blocking errors detected'",
+  "fanoutOrgCount": "use COMPUTED FACTS: e.g. '14 orgs (patient search) → 104 orgs (document fanout)'",
+  "documentsFound": "use COMPUTED FACTS: '8 documents retrieved (29 found in fanout before dedup)' — never guess",
+  "durationMs": "from COMPUTED FACTS duration",
+  "dataFlow": "Requester → CVS Health (broker) → N orgs patient search (X patients) → M orgs doc search (Y docs fanout, Z deduplicated)",
+  "rootCause": "Primary root cause grouping the most impactful errors",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
-  "l1Actions": ["Specific L1 action"],
-  "l2Actions": ["Engineering escalation action"],
+  "l1Actions": ["Specific L1 action naming org OID and error type"],
+  "l2Actions": ["Engineering escalation action naming org OID and specific fix needed"],
   "severity": "low|medium|high|critical",
-  "resolution": "Recommended resolution or 'No action required'"
+  "resolution": "Recommended resolution"
 }`;
 }
 
@@ -348,6 +507,7 @@ async function analyzeLogText(
 
   // Build a synthetic TransactionDetail so the UI renders consistently
   const entries = parseLogLines(logText);
+  const stats = computeLogStats(entries);
   const firstTs = entries[0]?.timestamp ?? "";
   const lastTs = entries[entries.length - 1]?.timestamp ?? "";
   const errors = entries.filter((e) => e.level === "Error");
@@ -361,11 +521,18 @@ async function analyzeLogText(
   else if (allMessages.includes("patient search") || allMessages.includes("patient link")) txType = "PatientSearch";
   else if (allMessages.includes("patient match")) txType = "PatientMatch";
 
+  // Determine status from computed stats
+  const overallStatus =
+    stats.overallStatus === "Successful" ? "Successful"
+    : stats.finalDocumentsRetrieved != null && stats.finalDocumentsRetrieved > 0 ? "Partial Success"
+    : hasErrors ? "Partial/Error"
+    : "Successful";
+
   const syntheticDetail: TransactionDetail = {
     transactionId,
     timestamp: firstTs,
     transactionType: txType,
-    status: hasErrors ? "Partial/Error" : "Successful",
+    status: overallStatus,
     rawFields: {
       "Transaction ID": transactionId,
       "Start Time": firstTs,
@@ -373,6 +540,15 @@ async function analyzeLogText(
       "Transaction Type": txType,
       "Error Count": String(errors.length),
       "Total Log Lines": String(entries.length),
+      ...(stats.finalDocumentsRetrieved != null
+        ? { "Documents Retrieved": String(stats.finalDocumentsRetrieved) }
+        : {}),
+      ...(stats.patientsFound != null
+        ? { "Patients Found": String(stats.patientsFound) }
+        : {}),
+      ...(stats.fanoutOrgCount != null
+        ? { "Fanout Org Count": String(stats.fanoutOrgCount) }
+        : {}),
     },
     oids: rawOids,
   };
@@ -385,13 +561,36 @@ async function analyzeLogText(
     const cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const parsed = JSON.parse(cleaned) as AnalysisResult["ai"];
 
+    // Build authoritative numeric strings from server-computed stats
+    // These OVERRIDE whatever Gemini returned — they are computed directly from the log
+    const computedDocsFound = stats.finalDocumentsRetrieved != null
+      ? stats.finalDocsInFanout != null && stats.finalDocsInFanout !== stats.finalDocumentsRetrieved
+        ? `${stats.finalDocumentsRetrieved} documents retrieved (${stats.finalDocsInFanout} in fanout before dedup)`
+        : `${stats.finalDocumentsRetrieved} documents retrieved`
+      : (parsed.documentsFound ?? "unknown");
+
+    const computedFanout = stats.patientSearchFanoutCount != null || stats.fanoutOrgCount != null
+      ? [
+          stats.patientSearchFanoutCount != null
+            ? `${stats.patientSearchFanoutCount} orgs (patient search, ${stats.patientsFound ?? "?"} patients found)`
+            : null,
+          stats.fanoutOrgCount != null
+            ? `${stats.fanoutOrgCount} orgs (document fanout)`
+            : null,
+        ].filter(Boolean).join(" → ")
+      : (parsed.fanoutOrgCount ?? "unknown");
+
+    const computedDuration = stats.durationMs != null
+      ? `${stats.durationMs}ms`
+      : (parsed.durationMs ?? "unknown");
+
     ai = {
       summary: parsed.summary ?? "No summary available",
       dataFlow: parsed.dataFlow ?? "",
       transactionCategory: parsed.transactionCategory ?? txType,
-      fanoutOrgCount: parsed.fanoutOrgCount ?? "unknown",
-      documentsFound: parsed.documentsFound ?? "unknown",
-      durationMs: parsed.durationMs ?? "unknown",
+      fanoutOrgCount: computedFanout,
+      documentsFound: computedDocsFound,
+      durationMs: computedDuration,
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations) ? parsed.organizations : orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: Array.isArray(parsed.l1Actions) ? parsed.l1Actions : [],
@@ -402,12 +601,12 @@ async function analyzeLogText(
   } catch (aiErr) {
     console.warn(`[LogAnalyze] AI failed for ${transactionId}:`, (aiErr as Error).message);
     ai = {
-      summary: `Log analysis for transaction ${transactionId} — ${errors.length} errors found across ${entries.length} log lines.`,
+      summary: `Log analysis for transaction ${transactionId} — ${errors.length} errors, ${entries.length} log lines.`,
       dataFlow: "",
       transactionCategory: txType,
-      fanoutOrgCount: "unknown",
-      documentsFound: "unknown",
-      durationMs: "unknown",
+      fanoutOrgCount: stats.fanoutOrgCount != null ? `${stats.fanoutOrgCount} orgs` : "unknown",
+      documentsFound: stats.finalDocumentsRetrieved != null ? `${stats.finalDocumentsRetrieved} documents retrieved` : "unknown",
+      durationMs: stats.durationMs != null ? `${stats.durationMs}ms` : "unknown",
       rootCause: errors[0]?.message ?? "Unable to determine (AI unavailable)",
       organizations: orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: ["Review error lines manually"],
