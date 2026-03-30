@@ -74,6 +74,12 @@ function buildPrompt(
     ? detail.rawPayload.slice(0, 16000)  // cap at ~16k chars for FHIR payloads
     : null;
 
+  // Broker log lines fetched from the portal log-lines endpoint
+  // These are the most authoritative source for fanout details, per-org results, and errors
+  const rawLogsText = detail.rawLogs
+    ? detail.rawLogs.slice(0, 20000)  // cap at ~20k chars
+    : null;
+
   const hasStructured = structuredFields.trim().length > 0;
   const hasRaw = rawText && rawText.trim().length > 0;
 
@@ -103,8 +109,16 @@ function buildPrompt(
 CVS Health operates as the CommonWell broker/intermediary that fans out requests to member organizations.
 
 ${
+  rawLogsText
+    ? `--- BROKER LOG LINES (MOST AUTHORITATIVE — use these for ALL fanout, per-org results, document counts, and errors) ---
+${rawLogsText}
+--- END BROKER LOG LINES ---
+
+`
+    : "NOTE: Broker log lines were NOT available for this transaction. Fanout details, per-org results, and document counts cannot be determined from the summary view alone. Be explicit about this limitation.\n\n"
+}${
   rawPayloadText
-    ? `--- RAW FHIR / MESSAGE PAYLOAD (most authoritative source) ---
+    ? `--- RAW FHIR / MESSAGE PAYLOAD ---
 ${rawPayloadText}
 --- END PAYLOAD ---
 
@@ -140,14 +154,14 @@ ${hasStructured ? `ALL EXTRACTED FIELDS:\n${structuredFields}\n` : ""}
 OID-TO-ORG RESOLUTION:
 ${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs resolved)"}
 
-INSTRUCTIONS — answer every field below:
+INSTRUCTIONS — answer every field below using the BROKER LOG LINES as the primary source when available:
 1. TRANSACTION CATEGORY: Classify as one of: Document Query, Document Retrieve, Patient Search, Patient Match, Document Submission, or Other.
-2. BROKERING CHAIN: Identify the full chain. CVS Health (Member Name field) is typically the broker/intermediary. Show: Initiating Org → CVS Health (broker) → [target orgs if known].
-3. FANOUT ORG COUNT: How many organizations was this brokered out to? Use exact number if visible in page text (e.g. "104 organizations") or log lines. Use "1 (direct)" for point-to-point, or "unknown — brokered" if duration suggests a fanout (>1000ms) but count is not in the data.
-4. DOCUMENTS FOUND / DOWNLOADED: For Document Query (DocumentReference path), state how many documents were returned if visible. For Document Retrieve (Binary path), state "1 document retrieved". If status is 200 but count is not in the data, state "≥0 (HTTP 200, exact count not in portal view)".
+2. BROKERING CHAIN: Identify the full chain from log lines. Show: Initiating Org → CVS Health (broker) → each target org with its result (success/error/no match). If log lines are unavailable, say so explicitly.
+3. FANOUT ORG COUNT: Count the orgs the request was fanned out to from the log lines. Name each org and its outcome. If some failed, state why (error code, timeout, no match). If log lines are unavailable, say "Not determinable — broker log lines not fetched" and explain what IS known from the summary.
+4. DOCUMENTS FOUND / DOWNLOADED: From log lines, state how many docs each org returned and total docs returned. Which orgs returned docs? Which returned 0? Which failed with errors? If log lines are unavailable, state the known HTTP status and explicitly note that doc counts require checking the portal log lines tab manually.
 5. DURATION: Calculate from Start Time and End Time. Long durations (>1s) indicate broker fanout.
-6. ORGANIZATIONS: List every org — use OID resolution above for names. Assign roles: requester, broker, responder.
-7. L1/L2 ACTIONS: Give concrete, specific actions — not generic advice.
+6. ORGANIZATIONS: List every org with name (from OID resolution or log lines), OID, role, and outcome.
+7. L1/L2 ACTIONS: Be highly specific. Name the orgs with errors. Provide the error codes. State exactly what to check in each case. Do NOT give generic advice like "verify with the initiating org if they received data".
 
 Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {

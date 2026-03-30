@@ -47,6 +47,8 @@ export interface DiscoveredEndpoints {
   orgLookup?: string;
   /** Endpoints that likely carry raw FHIR / message payload data */
   payloadEndpoints: EndpointEntry[];
+  /** Endpoints that likely carry per-transaction broker log lines */
+  logEndpoints: EndpointEntry[];
   all: EndpointEntry[];
   discoveredAt: string;
 }
@@ -185,9 +187,25 @@ const PAYLOAD_KEYWORDS = [
   "getbinary", "getcontent", "getdocument", "document",
 ];
 
+/** URL keyword patterns that indicate broker log line data */
+const LOG_KEYWORDS = [
+  "logline", "loglines", "log_line", "eventlog", "eventlogs",
+  "getlogs", "getlog", "logdata", "transactionlog",
+];
+
 function isPayloadEndpoint(url: string): boolean {
   const u = url.toLowerCase();
   return PAYLOAD_KEYWORDS.some((kw) => u.includes(kw)) && u.startsWith(PORTAL_URL.toLowerCase());
+}
+
+function isLogEndpoint(url: string): boolean {
+  const u = url.toLowerCase();
+  // Must be in the portal and look like a log-lines endpoint (not the detail view itself)
+  return (
+    u.startsWith(PORTAL_URL.toLowerCase()) &&
+    LOG_KEYWORDS.some((kw) => u.includes(kw)) &&
+    !u.includes("detail")
+  );
 }
 
 async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
@@ -236,7 +254,36 @@ async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
       }
     }
 
-    // Step 2: look for and click payload-revealing buttons in the expanded detail panel
+    // Step 2: look for and click log-lines tabs/buttons first (highest priority for log discovery)
+    const logTabSelectors = [
+      "a:has-text('Log Lines')",
+      "a:has-text('Logs')",
+      "a:has-text('Event Log')",
+      "a:has-text('Log')",
+      "button:has-text('Log Lines')",
+      "button:has-text('Logs')",
+      "li:has-text('Log Lines') a",
+      "li:has-text('Logs') a",
+      "[href*='log']",
+      "[data-tab='logs']",
+      "[data-target*='log']",
+    ];
+
+    for (const selector of logTabSelectors) {
+      try {
+        const btn = p.locator(selector).first();
+        if ((await btn.count()) > 0) {
+          await btn.click({ timeout: 3000 });
+          await p.waitForTimeout(2000);
+          console.log(`[Discovery] Clicked log tab: ${selector}`);
+          break;
+        }
+      } catch {
+        // not found — continue
+      }
+    }
+
+    // Step 3: look for and click payload-revealing buttons in the expanded detail panel
     // (e.g. "View", "Download", "Raw", "FHIR", "Message Body", "Request", "Response")
     const payloadButtonSelectors = [
       "button:has-text('View')",
@@ -267,7 +314,7 @@ async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
       }
     }
 
-    // Step 3: also wait for any lazy-loaded content
+    // Step 4: also wait for any lazy-loaded content
     await p.waitForTimeout(2000);
   } catch (err) {
     console.warn("[Discovery] Navigation failed:", (err as Error).message);
@@ -289,15 +336,19 @@ async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
   const payloadEntries = captured.filter(
     (e) => isPayloadEndpoint(e.url) && !isDetailUrl(e.url)
   );
+  const logEntries = captured.filter((e) => isLogEndpoint(e.url));
 
   console.log(`[Discovery] Found ${payloadEntries.length} potential payload endpoint(s):`);
   payloadEntries.forEach((e) => console.log(`  [${e.method}] ${e.url}`));
+  console.log(`[Discovery] Found ${logEntries.length} potential log line endpoint(s):`);
+  logEntries.forEach((e) => console.log(`  [${e.method}] ${e.url}`));
 
   const discovered: DiscoveredEndpoints = {
     detailHtml: detailEntry?.url,
     detailJson: jsonEntry?.url,
     orgLookup: orgEntry?.url,
     payloadEndpoints: payloadEntries,
+    logEndpoints: logEntries,
     all: captured,
     discoveredAt: new Date().toISOString(),
   };

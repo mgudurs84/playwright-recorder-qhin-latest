@@ -32,6 +32,13 @@ export interface TransactionDetail {
   rawPayload?: string;
   /** Which endpoint provided the rawPayload */
   payloadEndpointUsed?: string;
+  /**
+   * Raw broker log lines fetched from a log-lines endpoint.
+   * Contains per-org fanout results, document counts, error details.
+   */
+  rawLogs?: string;
+  /** Which endpoint provided the rawLogs */
+  logEndpointUsed?: string;
 }
 
 function buildCookieHeader(cookies: SessionData["cookies"]): string {
@@ -537,6 +544,128 @@ async function fetchRawPayload(
   return null;
 }
 
+/**
+ * Hardcoded candidate endpoints for broker log lines.
+ * Based on the known detail endpoint naming pattern: LoadTransactionLogsDetailPartialView
+ */
+const CANDIDATE_LOG_ENDPOINTS: Array<{ url: string; method: "GET" | "POST" }> = [
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogLinesPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsLogLinesPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsLogsPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsEventLogsPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/GetTransactionLogLines`, method: "GET" },
+  { url: `${PORTAL_URL}/TransactionLogs/GetLogLines`, method: "GET" },
+  { url: `${PORTAL_URL}/TransactionLogs/GetLogs`, method: "GET" },
+  { url: `${PORTAL_URL}/TransactionLogs/LogLines`, method: "GET" },
+];
+
+/**
+ * Scan the detail HTML's script tags for any AJAX endpoint URLs referencing "log"
+ * (e.g., Kendo Grid DataSource read URLs like { url: '/TransactionLogs/GetLogs' }).
+ */
+function extractLogEndpointsFromHtml(html: string): string[] {
+  const found: string[] = [];
+  const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const [, scriptContent] of scriptBlocks) {
+    // Match string literals that look like portal paths containing "log"
+    const urlLiterals = scriptContent.match(/['"](\/[A-Za-z/]+[Ll]og[A-Za-z/]*)['"]/g) ?? [];
+    for (const lit of urlLiterals) {
+      const path = lit.replace(/['"]/g, "");
+      if (/log/i.test(path) && !/login/i.test(path)) {
+        found.push(`${PORTAL_URL}${path}`);
+      }
+    }
+  }
+  return [...new Set(found)];
+}
+
+/**
+ * Returns true if the response text looks like genuine log data
+ * (contains timestamp-like patterns and log-level keywords — not a login redirect).
+ */
+function looksLikeLogData(text: string): boolean {
+  if (text.length < 80) return false;
+  if (text.includes("UserName") && text.includes("Password") && text.length < 5000) return false;
+  // Log lines typically contain dates (MM/DD/YYYY or ISO) and log level words
+  const hasDatePattern = /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}/.test(text);
+  const hasLogLevel = /\b(information|warning|error|debug|trace|critical)\b/i.test(text);
+  // OR looks like a JSON array (Kendo DataSource response)
+  const isJsonArray = text.trimStart().startsWith("[");
+  return (hasDatePattern && hasLogLevel) || isJsonArray;
+}
+
+/**
+ * Attempt to fetch broker log lines for a transaction.
+ * Tries: discovered endpoints → extracted HTML endpoints → hardcoded candidates.
+ * Returns null if none succeed.
+ */
+async function fetchLogLines(
+  transactionId: string,
+  cookieHeader: string,
+  formToken: string | null,
+  discoveredLogEndpoints: Array<{ url: string; method: string }>,
+  detailHtml?: string
+): Promise<{ logs: string; endpointUsed: string } | null> {
+  const authHeaders: Record<string, string> = {
+    ...BASE_HEADERS,
+    Cookie: cookieHeader,
+    "X-Requested-With": "XMLHttpRequest",
+    Accept: "text/html, application/json, */*",
+    Referer: `${PORTAL_URL}/TransactionLogs/index`,
+    ...(formToken ? { "__RequestVerificationToken": formToken } : {}),
+  };
+
+  // Build the ordered list of URLs to try
+  const toTry: Array<{ url: string; method: "GET" | "POST" }> = [
+    ...discoveredLogEndpoints.map((e) => ({ url: e.url, method: e.method as "GET" | "POST" })),
+    ...(detailHtml ? extractLogEndpointsFromHtml(detailHtml).map((url) => ({ url, method: "POST" as const })) : []),
+    ...CANDIDATE_LOG_ENDPOINTS,
+  ];
+
+  // Deduplicate while preserving order
+  const seen = new Set<string>();
+  const deduped = toTry.filter((e) => {
+    const key = `${e.method}:${e.url}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  for (const ep of deduped) {
+    try {
+      let res: Response;
+      if (ep.method === "POST") {
+        const body = new URLSearchParams({ transactionId });
+        if (formToken) body.set("__RequestVerificationToken", formToken);
+        res = await fetch(ep.url, {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+      } else {
+        const url = `${ep.url}${ep.url.includes("?") ? "&" : "?"}transactionId=${encodeURIComponent(transactionId)}`;
+        res = await fetch(url, { method: "GET", headers: authHeaders });
+      }
+
+      console.log(`[DirectFetch] Log probe ${ep.method} ${ep.url} → HTTP ${res.status}`);
+
+      if (!res.ok) continue;
+
+      const text = await res.text();
+      if (looksLikeLogData(text)) {
+        console.log(`[DirectFetch] Got log lines from ${ep.url} (${text.length} chars)`);
+        return { logs: text, endpointUsed: ep.url };
+      }
+      console.log(`[DirectFetch] Response from ${ep.url} doesn't look like log data (${text.length} chars)`);
+    } catch (err) {
+      console.warn(`[DirectFetch] Log probe failed for ${ep.url}:`, (err as Error).message);
+    }
+  }
+
+  console.log("[DirectFetch] No log lines endpoint found for this transaction");
+  return null;
+}
+
 export async function fetchTransactionDetail(transactionId: string): Promise<TransactionDetail> {
   const session = loadSession();
   if (!session) {
@@ -581,25 +710,33 @@ export async function fetchTransactionDetail(transactionId: string): Promise<Tra
     endpointUsed: detailUrl,
   };
 
-  // Probe discovered payload endpoints (raw FHIR / message body)
+  // Probe payload endpoints AND log lines endpoints in parallel
   const payloadEndpoints = endpoints?.payloadEndpoints ?? [];
-  if (payloadEndpoints.length > 0) {
-    console.log(`[DirectFetch] Probing ${payloadEndpoints.length} payload endpoint(s)...`);
-    const payloadResult = await fetchRawPayload(
-      transactionId,
-      cookieHeader,
-      formToken,
-      payloadEndpoints
-    );
-    if (payloadResult) {
-      detail.rawPayload = payloadResult.payload;
-      detail.payloadEndpointUsed = payloadResult.endpointUsed;
-      console.log(`[DirectFetch] Raw payload captured (${payloadResult.payload.length} chars)`);
-    } else {
-      console.log("[DirectFetch] No payload data returned from any payload endpoint");
-    }
+  const logEndpoints = endpoints?.logEndpoints ?? [];
+
+  const [payloadResult, logResult] = await Promise.all([
+    payloadEndpoints.length > 0
+      ? (console.log(`[DirectFetch] Probing ${payloadEndpoints.length} payload endpoint(s)...`),
+         fetchRawPayload(transactionId, cookieHeader, formToken, payloadEndpoints))
+      : (console.log("[DirectFetch] No payload endpoints discovered yet"), Promise.resolve(null)),
+    (console.log(`[DirectFetch] Probing log lines (${logEndpoints.length} discovered + candidates)...`),
+     fetchLogLines(transactionId, cookieHeader, formToken, logEndpoints, detail.rawHtml)),
+  ]);
+
+  if (payloadResult) {
+    detail.rawPayload = payloadResult.payload;
+    detail.payloadEndpointUsed = payloadResult.endpointUsed;
+    console.log(`[DirectFetch] Raw payload captured (${payloadResult.payload.length} chars)`);
   } else {
-    console.log("[DirectFetch] No payload endpoints discovered yet — re-login to trigger discovery");
+    console.log("[DirectFetch] No payload data returned from any payload endpoint");
+  }
+
+  if (logResult) {
+    detail.rawLogs = logResult.logs;
+    detail.logEndpointUsed = logResult.endpointUsed;
+    console.log(`[DirectFetch] Broker log lines captured (${logResult.logs.length} chars) from ${logResult.endpointUsed}`);
+  } else {
+    console.log("[DirectFetch] No broker log lines found — analysis will use summary fields only");
   }
 
   // Optionally augment with discovered JSON endpoint
