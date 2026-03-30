@@ -585,13 +585,22 @@ function extractLogEndpointsFromHtml(html: string): string[] {
  */
 function looksLikeLogData(text: string): boolean {
   if (text.length < 80) return false;
+  // Reject login pages
   if (text.includes("UserName") && text.includes("Password") && text.length < 5000) return false;
-  // Log lines typically contain dates (MM/DD/YYYY or ISO) and log level words
-  const hasDatePattern = /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}/.test(text);
-  const hasLogLevel = /\b(information|warning|error|debug|trace|critical)\b/i.test(text);
-  // OR looks like a JSON array (Kendo DataSource response)
-  const isJsonArray = text.trimStart().startsWith("[");
-  return (hasDatePattern && hasLogLevel) || isJsonArray;
+  // Reject portal HTML/CSS — these contain HTML tags
+  if (/<html|<head|<body|<div|<script|<!DOCTYPE/i.test(text.slice(0, 500))) return false;
+
+  // Require the EXACT CommonWell log format:
+  //   MM/DD/YYYY HH:MM:SS.mmm[TAB]Level[TAB]Component[TAB]Message
+  // The TAB between timestamp and log level NEVER appears in portal HTML.
+  const hasCwLogFormat = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\t(Information|Warning|Error|Debug|Critical)/i.test(text);
+  if (hasCwLogFormat) return true;
+
+  // OR a JSON array containing expected log field names (Kendo DataSource response)
+  const isJsonLogArray =
+    text.trimStart().startsWith("[") &&
+    /"(timestamp|level|message|component|logLevel)"\s*:/i.test(text);
+  return isJsonLogArray;
 }
 
 /**
