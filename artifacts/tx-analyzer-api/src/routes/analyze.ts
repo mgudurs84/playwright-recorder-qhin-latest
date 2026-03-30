@@ -408,6 +408,15 @@ function computeLogStats(entries: LogEntry[]): {
     const finalDocMatch = msg.match(/Completed brokered document search with (\d+) documents? retrieved/i);
     if (finalDocMatch) finalDocumentsRetrieved = parseInt(finalDocMatch[1], 10);
 
+    // Document Retrieve (not search): a single document is returned per transaction
+    // "Completed brokered document retrieve with result document '...'"
+    if (
+      finalDocumentsRetrieved === null &&
+      /Completed brokered document retrieve with result document/i.test(msg)
+    ) {
+      finalDocumentsRetrieved = 1;
+    }
+
     // "Completed fanout document search request with status 'X', 'Y' documents, Z errors"
     const fanoutDocMatch = msg.match(/Completed fanout document search.*?'(\d+)' documents.*?(\d+) errors/i);
     if (fanoutDocMatch) finalDocsInFanout = parseInt(fanoutDocMatch[1], 10);
@@ -434,6 +443,22 @@ function computeLogStats(entries: LogEntry[]): {
       });
     }
 
+    // Per-org: document retrieve request complete (different format — no "documents found" field)
+    // "Brokered document retrieve request complete to target organization '...' ... Status: Success, error count: 0, error details: ''"
+    const docRetrieveCompleteMatch = msg.match(
+      /[Bb]rokered document retrieve request complete to target organization "([^"]+)".*?Status:\s*(\w+).*?error count:\s*(\d+).*?error details:\s*"([^"]*)"/i
+    );
+    if (docRetrieveCompleteMatch) {
+      const status = docRetrieveCompleteMatch[2];
+      const errCount = parseInt(docRetrieveCompleteMatch[3], 10);
+      perOrgDocResults.push({
+        org: docRetrieveCompleteMatch[1],
+        status,
+        docsFound: /success/i.test(status) && errCount === 0 ? 1 : 0,
+        error: docRetrieveCompleteMatch[4] || undefined,
+      });
+    }
+
     // Per-org: patient search request complete
     const patCompleteMatch = msg.match(/patient search request complete to target organization "([^"]+)".*Status: (\w+).*patients found: (\d+).*error details: "([^"]*)"/i);
     if (patCompleteMatch) {
@@ -455,6 +480,12 @@ function computeLogStats(entries: LogEntry[]): {
     // Overall status line
     const statusMatch = msg.match(/Response completed|PartialSuccess|Successful|Failed/i);
     if (statusMatch && !overallStatus) overallStatus = statusMatch[0];
+  }
+
+  // For Document Retrieve transactions there is no "Retrieved N organizations for fanout" line.
+  // Infer the fanout org count from the number of per-org retrieve completions captured above.
+  if (fanoutOrgCount === null && perOrgDocResults.length > 0 && finalDocumentsRetrieved !== null) {
+    fanoutOrgCount = perOrgDocResults.length;
   }
 
   // Duration: first ts to last ts
