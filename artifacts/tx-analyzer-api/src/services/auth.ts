@@ -45,6 +45,8 @@ export interface DiscoveredEndpoints {
   detailHtml?: string;
   detailJson?: string;
   orgLookup?: string;
+  /** Endpoints that likely carry raw FHIR / message payload data */
+  payloadEndpoints: EndpointEntry[];
   all: EndpointEntry[];
   discoveredAt: string;
 }
@@ -176,26 +178,43 @@ export async function getSessionStatus(): Promise<{ valid: boolean; expiresAt?: 
   return { valid: true, expiresAt: session.expiresAt };
 }
 
-/**
- * Run network discovery after login: navigate to TransactionLogs, intercept all XHR/fetch
- * calls (including row-expand), and save the discovered endpoint map to data/endpoints.json.
- */
+/** URL keyword patterns that indicate raw payload / FHIR message data */
+const PAYLOAD_KEYWORDS = [
+  "payload", "rawpayload", "message", "body", "fhir",
+  "download", "export", "raw", "request", "response",
+  "getbinary", "getcontent", "getdocument", "document",
+];
+
+function isPayloadEndpoint(url: string): boolean {
+  const u = url.toLowerCase();
+  return PAYLOAD_KEYWORDS.some((kw) => u.includes(kw)) && u.startsWith(PORTAL_URL.toLowerCase());
+}
+
 async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
   const captured: EndpointEntry[] = [];
+  const seen = new Set<string>();
 
+  // Capture ALL requests from the portal — not just XHR — to find download/export URLs
   p.on("request", (req) => {
     const url = req.url();
+    if (!url.startsWith(PORTAL_URL) || seen.has(url)) return;
+    seen.add(url);
+
     const method = req.method();
     const headers = req.headers();
-    const isXhr =
-      headers["x-requested-with"] === "XMLHttpRequest" ||
-      (headers["accept"] ?? "").includes("application/json") ||
-      (headers["accept"] ?? "").includes("text/html") ||
-      method === "POST";
+    const contentType = headers["content-type"] ?? "";
+    const accept = headers["accept"] ?? "";
+    const isXhr = headers["x-requested-with"] === "XMLHttpRequest";
+    const isApi = accept.includes("application/json") || accept.includes("text/html");
+    const isPost = method === "POST";
+    const isPotentialPayload = isPayloadEndpoint(url);
 
-    if (isXhr && url.startsWith(PORTAL_URL)) {
-      const contentType = headers["content-type"] ?? "";
-      const trigger = url.includes("Detail") ? "row-expand" : url.includes("Load") ? "partial-view" : "page-load";
+    // Capture XHR, POSTs, API calls, and anything that looks like a payload endpoint
+    if (isXhr || isApi || isPost || isPotentialPayload) {
+      const trigger = url.includes("Detail") ? "row-expand"
+        : url.includes("Load") ? "partial-view"
+        : isPotentialPayload ? "payload-probe"
+        : "page-load";
       captured.push({ url, method, contentType, trigger });
     }
   });
@@ -205,41 +224,86 @@ async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
     await p.goto(txUrl, { waitUntil: "networkidle", timeout: 60000 });
     await p.waitForTimeout(3000);
 
+    // Step 1: expand the first transaction row
     const rows = p.locator("tr.k-master-row, tr[data-uid], tbody tr").first();
     if ((await rows.count()) > 0) {
       try {
         await rows.click({ timeout: 5000 });
-        await p.waitForTimeout(2000);
+        await p.waitForTimeout(2500);
+        console.log("[Discovery] Clicked first transaction row");
       } catch {
         console.log("[Discovery] Could not expand a row — may need real transaction data");
       }
     }
+
+    // Step 2: look for and click payload-revealing buttons in the expanded detail panel
+    // (e.g. "View", "Download", "Raw", "FHIR", "Message Body", "Request", "Response")
+    const payloadButtonSelectors = [
+      "button:has-text('View')",
+      "button:has-text('Download')",
+      "button:has-text('Raw')",
+      "button:has-text('FHIR')",
+      "button:has-text('Message')",
+      "button:has-text('Request')",
+      "button:has-text('Response')",
+      "a:has-text('Download')",
+      "a:has-text('View Raw')",
+      "a:has-text('Payload')",
+      "[data-action='download']",
+      "[data-action='view-payload']",
+    ];
+
+    for (const selector of payloadButtonSelectors) {
+      try {
+        const btn = p.locator(selector).first();
+        if ((await btn.count()) > 0) {
+          await btn.click({ timeout: 3000 });
+          await p.waitForTimeout(1500);
+          console.log(`[Discovery] Clicked payload button: ${selector}`);
+          break;
+        }
+      } catch {
+        // button not found or not clickable — continue
+      }
+    }
+
+    // Step 3: also wait for any lazy-loaded content
+    await p.waitForTimeout(2000);
   } catch (err) {
     console.warn("[Discovery] Navigation failed:", (err as Error).message);
   }
 
-  // Must include "Detail" and must NOT be a list/index page
-  const detailEntry = captured.find((e) => {
-    const u = e.url.toLowerCase();
+  // Classify captured endpoints
+  const isDetailUrl = (url: string) => {
+    const u = url.toLowerCase();
     return u.includes("detail") && !u.includes("list") && !u.includes("index");
-  });
+  };
+
+  const detailEntry = captured.find((e) => isDetailUrl(e.url));
   const jsonEntry = captured.find(
     (e) => e.url.includes("json") || (e.url.includes("data") && e.contentType.includes("json"))
   );
   const orgEntry = captured.find(
     (e) => e.url.toLowerCase().includes("org") || e.url.toLowerCase().includes("organization")
   );
+  const payloadEntries = captured.filter(
+    (e) => isPayloadEndpoint(e.url) && !isDetailUrl(e.url)
+  );
+
+  console.log(`[Discovery] Found ${payloadEntries.length} potential payload endpoint(s):`);
+  payloadEntries.forEach((e) => console.log(`  [${e.method}] ${e.url}`));
 
   const discovered: DiscoveredEndpoints = {
     detailHtml: detailEntry?.url,
     detailJson: jsonEntry?.url,
     orgLookup: orgEntry?.url,
+    payloadEndpoints: payloadEntries,
     all: captured,
     discoveredAt: new Date().toISOString(),
   };
 
   writeFileSync(ENDPOINTS_FILE, JSON.stringify(discovered, null, 2), "utf8");
-  console.log(`[Discovery] Saved ${captured.length} endpoints to ${ENDPOINTS_FILE}`);
+  console.log(`[Discovery] Saved ${captured.length} total endpoints to ${ENDPOINTS_FILE}`);
   return discovered;
 }
 

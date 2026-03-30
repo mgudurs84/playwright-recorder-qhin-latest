@@ -62,6 +62,8 @@ export interface TransactionDetail {
   rawFields: Record<string, string>;
   oids: string[];
   endpointUsed?: string;
+  rawPayload?: string;
+  payloadEndpointUsed?: string;
 }
 
 export interface AiAnalysis {

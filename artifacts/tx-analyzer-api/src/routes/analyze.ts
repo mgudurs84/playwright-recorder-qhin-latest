@@ -65,12 +65,27 @@ function buildPrompt(
     ? htmlToText(detail.rawHtml).slice(0, 12000)  // cap at ~12k chars
     : null;
 
+  // Raw FHIR / message payload from a discovered payload endpoint (may be XML or JSON)
+  const rawPayloadText = detail.rawPayload
+    ? detail.rawPayload.slice(0, 16000)  // cap at ~16k chars for FHIR payloads
+    : null;
+
   const hasStructured = structuredFields.trim().length > 0;
   const hasRaw = rawText && rawText.trim().length > 0;
 
   return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
 
 ${
+  rawPayloadText
+    ? `Below is the RAW FHIR / MESSAGE PAYLOAD for this transaction. This is the actual wire-level content exchanged between systems — use it as the most authoritative source of data.
+
+--- RAW FHIR / MESSAGE PAYLOAD ---
+${rawPayloadText}
+--- END RAW FHIR / MESSAGE PAYLOAD ---
+
+`
+    : ""
+}${
   hasRaw
     ? `Below is the RAW PORTAL PAGE TEXT for this transaction. Extract all relevant fields from it directly — do not rely solely on the pre-parsed fields below, which may be incomplete.
 
@@ -226,6 +241,9 @@ export function registerAnalyzeRoutes(app: Express): void {
         oidsFound: detail.oids,
         rawHtmlLength: detail.rawHtml?.length ?? 0,
         rawHtml: detail.rawHtml ?? null,
+        payloadEndpointUsed: detail.payloadEndpointUsed ?? null,
+        rawPayloadLength: detail.rawPayload?.length ?? 0,
+        rawPayload: detail.rawPayload ?? null,
       });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

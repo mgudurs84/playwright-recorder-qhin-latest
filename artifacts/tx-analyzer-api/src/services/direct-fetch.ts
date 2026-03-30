@@ -28,6 +28,10 @@ export interface TransactionDetail {
   oids: string[];
   rawHtml?: string;
   endpointUsed?: string;
+  /** Raw FHIR / message payload fetched from a discovered payload endpoint */
+  rawPayload?: string;
+  /** Which endpoint provided the rawPayload */
+  payloadEndpointUsed?: string;
 }
 
 function buildCookieHeader(cookies: SessionData["cookies"]): string {
@@ -235,6 +239,62 @@ async function postDetail(
   return response.text();
 }
 
+/**
+ * Probe discovered payload endpoints to retrieve the raw FHIR / message content
+ * for a transaction. Tries GET (query param) then POST (form body) for each endpoint.
+ * Returns the first non-empty, non-login-page response.
+ */
+async function fetchRawPayload(
+  transactionId: string,
+  cookieHeader: string,
+  formToken: string | null,
+  payloadEndpoints: Array<{ url: string; method: string }>
+): Promise<{ payload: string; endpointUsed: string } | null> {
+  const authHeaders: Record<string, string> = {
+    ...BASE_HEADERS,
+    Cookie: cookieHeader,
+    "X-Requested-With": "XMLHttpRequest",
+    Accept: "application/json, application/xml, text/xml, text/html, */*",
+    ...(formToken ? { "__RequestVerificationToken": formToken } : {}),
+  };
+
+  for (const ep of payloadEndpoints) {
+    try {
+      let res: Response;
+
+      if (ep.method === "POST") {
+        const body = new URLSearchParams({ transactionId });
+        if (formToken) body.set("__RequestVerificationToken", formToken);
+        res = await fetch(ep.url, {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+      } else {
+        const url = `${ep.url}${ep.url.includes("?") ? "&" : "?"}transactionId=${encodeURIComponent(transactionId)}`;
+        res = await fetch(url, { method: "GET", headers: authHeaders });
+      }
+
+      if (!res.ok) {
+        console.log(`[DirectFetch] Payload endpoint ${ep.url} → HTTP ${res.status}`);
+        continue;
+      }
+
+      const text = await res.text();
+      // Skip login redirect pages
+      if (text.includes("UserName") && text.includes("Password") && text.length < 5000) continue;
+      // Skip empty or very short responses
+      if (text.trim().length < 50) continue;
+
+      console.log(`[DirectFetch] Got payload from ${ep.url} (${text.length} chars)`);
+      return { payload: text, endpointUsed: ep.url };
+    } catch (err) {
+      console.warn(`[DirectFetch] Payload probe failed for ${ep.url}:`, (err as Error).message);
+    }
+  }
+  return null;
+}
+
 export async function fetchTransactionDetail(transactionId: string): Promise<TransactionDetail> {
   const session = loadSession();
   if (!session) {
@@ -278,6 +338,27 @@ export async function fetchTransactionDetail(transactionId: string): Promise<Tra
     ...parseHtmlDetail(html, transactionId),
     endpointUsed: detailUrl,
   };
+
+  // Probe discovered payload endpoints (raw FHIR / message body)
+  const payloadEndpoints = endpoints?.payloadEndpoints ?? [];
+  if (payloadEndpoints.length > 0) {
+    console.log(`[DirectFetch] Probing ${payloadEndpoints.length} payload endpoint(s)...`);
+    const payloadResult = await fetchRawPayload(
+      transactionId,
+      cookieHeader,
+      formToken,
+      payloadEndpoints
+    );
+    if (payloadResult) {
+      detail.rawPayload = payloadResult.payload;
+      detail.payloadEndpointUsed = payloadResult.endpointUsed;
+      console.log(`[DirectFetch] Raw payload captured (${payloadResult.payload.length} chars)`);
+    } else {
+      console.log("[DirectFetch] No payload data returned from any payload endpoint");
+    }
+  } else {
+    console.log("[DirectFetch] No payload endpoints discovered yet — re-login to trigger discovery");
+  }
 
   // Optionally augment with discovered JSON endpoint
   if (endpoints?.detailJson && endpoints.detailJson !== detailUrl) {
