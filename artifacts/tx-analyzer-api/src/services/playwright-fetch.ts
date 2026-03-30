@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContextOptions } from "playwright";
+import { chromium, type Browser, type BrowserContextOptions, type Route } from "playwright";
 import { loadSession } from "./auth.js";
 import type { TransactionDetail } from "./direct-fetch.js";
 
@@ -7,7 +7,6 @@ const PORTAL_URL =
   "https://integration.commonwellalliance.lkopera.com";
 
 const DETAIL_URL = `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailPartialView`;
-
 const OID_REGEX = /\d+(?:\.\d+){5,}/g;
 
 let pwBrowser: Browser | null = null;
@@ -27,27 +26,101 @@ function extractOids(text: string): string[] {
   return [...new Set(raw.filter((m) => m.startsWith("2.16.840") || m.startsWith("1.3.6")))];
 }
 
+/** Convert a Kendo Grid JSON response {Data:[...], Total:N} to tab-separated lines */
+function normalizeKendoJson(body: string): string | null {
+  try {
+    const json = JSON.parse(body) as unknown;
+    if (
+      typeof json !== "object" ||
+      json === null ||
+      !("Data" in json) ||
+      !Array.isArray((json as { Data: unknown }).Data)
+    ) return null;
+
+    const rows = (json as { Data: Array<Record<string, unknown>> }).Data;
+    if (rows.length === 0) return null;
+
+    return rows
+      .map((row) => {
+        const ts = String(row["TimeStampDisplay"] ?? row["Timestamp"] ?? "");
+        const level = String(row["Level"] ?? row["LogLevel"] ?? "Information");
+        const component = String(row["Component"] ?? row["Source"] ?? "");
+        const message = String(row["Message"] ?? row["Description"] ?? "");
+        return `${ts}\t${level}\t${component}\t${message}`;
+      })
+      .join("\n");
+  } catch {
+    return null;
+  }
+}
+
+/** Extract transaction detail fields from HTML using multiple patterns */
+function extractFieldsFromHtml(html: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+
+  // dl/dt/dd pairs (most common in portal partial views)
+  const dlRegex = /<dl[^>]*>([\s\S]*?)<\/dl>/gi;
+  for (const [, dlContent] of html.matchAll(dlRegex)) {
+    const dtRegex = /<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi;
+    for (const [, label, value] of dlContent.matchAll(dtRegex)) {
+      const k = label.replace(/<[^>]+>/g, "").trim().replace(/:$/, "");
+      const v = value.replace(/<[^>]+>/g, "").trim();
+      if (k && v) fields[k] = v;
+    }
+  }
+
+  // label + adjacent span/p/div in form groups
+  const lgRegex =
+    /<label[^>]*>([\s\S]*?)<\/label>[\s\S]*?<(?:span|p|div|input)[^>]*>([^<]*)</gi;
+  for (const [, label, value] of html.matchAll(lgRegex)) {
+    const k = label.replace(/<[^>]+>/g, "").trim().replace(/:$/, "");
+    const v = value.trim();
+    if (k && v && k.length < 80) fields[k] = v;
+  }
+
+  // 2-cell table rows  <td>Label</td><td>Value</td>
+  const trRegex = /<tr[^>]*>\s*<t[dh][^>]*>([\s\S]*?)<\/t[dh]>\s*<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+  for (const [, col1, col2] of html.matchAll(trRegex)) {
+    const k = col1.replace(/<[^>]+>/g, "").trim().replace(/:$/, "");
+    const v = col2.replace(/<[^>]+>/g, "").trim();
+    if (k && v && k.length < 80 && !k.includes("\n")) fields[k] = v;
+  }
+
+  return fields;
+}
+
+interface CapturedResponse {
+  url: string;
+  contentType: string;
+  body: string;
+}
+
 /**
- * Fetch a transaction detail using a real Playwright browser so that:
- *  1. Kendo Grid initialisation scripts run inside the portal's JS context
- *  2. All grid columns (including Component + Message) are fully rendered
- *  3. We can extract rows that are blank in the raw API response
+ * Fetch a transaction detail using a real Playwright browser.
+ *
+ * The critical improvement over the first version: **network interception**.
+ * We capture every AJAX response the portal makes once the detail partial view
+ * is loaded.  The Kendo Grid fires its own data-source requests (e.g.
+ * BindTransactionLogsHistory) to populate the grid rows — these responses
+ * carry the complete Component + Message columns that the raw HTML skeleton
+ * does not contain.
  *
  * Flow:
- *   navigate to portal index  →  get CSRF token  →  fetch partial-view HTML
- *   via page.evaluate (same origin, cookies work)  →  inject HTML into live DOM
- *   →  re-run inline <script> tags  →  wait for grid render  →  scrape rows + fields
+ *   1. Set up context-level route interception for all /TransactionLogs/* URLs
+ *   2. Navigate to the portal transaction logs index
+ *   3. Fetch + inject the detail partial view (same origin → cookies & CSRF valid)
+ *   4. Re-run inline <script> tags so Kendo Grids initialise
+ *   5. Wait for network to go idle (all Kendo AJAX calls complete)
+ *   6. Parse captured responses: JSON grid data + HTML field extraction
+ *   7. Also read rendered DOM for any additional fields
  */
 export async function fetchTransactionDetailPlaywright(
   transactionId: string
 ): Promise<TransactionDetail> {
   const session = loadSession();
-  if (!session) {
-    throw new Error("No valid session — please log in first");
-  }
+  if (!session) throw new Error("No valid session — please log in first");
 
   const browser = await ensurePwBrowser();
-
   const contextOptions: BrowserContextOptions = {
     storageState: session.storageState as BrowserContextOptions["storageState"],
     viewport: { width: 1280, height: 900 },
@@ -59,8 +132,29 @@ export async function fetchTransactionDetailPlaywright(
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
 
+  const captured: CapturedResponse[] = [];
+
+  // Intercept every request under /TransactionLogs to capture AJAX responses
+  await context.route(
+    (url) => url.href.includes("/TransactionLogs/"),
+    async (route: Route) => {
+      try {
+        const response = await route.fetch();
+        const body = await response.text();
+        captured.push({
+          url: route.request().url(),
+          contentType: response.headers()["content-type"] ?? "",
+          body,
+        });
+        await route.fulfill({ response, body });
+      } catch {
+        await route.continue();
+      }
+    }
+  );
+
   try {
-    console.log(`[PlaywrightFetch] Navigating to portal for ${transactionId}`);
+    console.log(`[PlaywrightFetch] Loading portal for ${transactionId}`);
     await page.goto(`${PORTAL_URL}/TransactionLogs`, {
       waitUntil: "domcontentloaded",
       timeout: 30000,
@@ -70,6 +164,7 @@ export async function fetchTransactionDetailPlaywright(
       throw new Error("Session expired — portal redirected to login");
     }
 
+    // Get CSRF token from the live page
     const formToken: string | null = await page.evaluate((): string | null => {
       const el = document.querySelector<HTMLInputElement>(
         'input[name="__RequestVerificationToken"]'
@@ -77,10 +172,20 @@ export async function fetchTransactionDetailPlaywright(
       return el?.value ?? null;
     });
 
-    console.log(`[PlaywrightFetch] CSRF token: ${formToken ? "obtained" : "not found"}`);
+    console.log(`[PlaywrightFetch] CSRF token: ${formToken ? "ok" : "missing"}`);
 
+    // Fetch the detail partial view HTML from within the browser context
+    // (same origin — cookies and CSRF token are automatically included)
     const rawHtml: string = await page.evaluate(
-      async ({ txId, url, token }: { txId: string; url: string; token: string | null }): Promise<string> => {
+      async ({
+        txId,
+        url,
+        token,
+      }: {
+        txId: string;
+        url: string;
+        token: string | null;
+      }): Promise<string> => {
         const fd = new FormData();
         fd.append("TransactionId", txId);
         if (token) fd.append("__RequestVerificationToken", token);
@@ -96,6 +201,8 @@ export async function fetchTransactionDetailPlaywright(
 
     console.log(`[PlaywrightFetch] Partial view HTML: ${rawHtml.length} chars`);
 
+    // Inject HTML into the live portal page so Kendo Grid scripts initialise
+    // with access to the portal's loaded JS libraries (jQuery, Kendo UI, etc.)
     await page.evaluate((html: string): void => {
       const existing = document.getElementById("pw-detail-root");
       if (existing) existing.remove();
@@ -103,56 +210,38 @@ export async function fetchTransactionDetailPlaywright(
       const container = document.createElement("div");
       container.id = "pw-detail-root";
       container.style.cssText =
-        "position:absolute;left:-9999px;visibility:hidden;width:1200px";
+        "position:absolute;top:0;left:0;width:1200px;min-height:100px;z-index:-1;visibility:hidden";
       container.innerHTML = html;
       document.body.appendChild(container);
 
-      container.querySelectorAll<HTMLScriptElement>("script").forEach((orig: HTMLScriptElement) => {
-        try {
-          const s = document.createElement("script");
-          if (orig.src) {
-            s.src = orig.src;
-          } else {
+      // Re-execute inline <script> tags so Kendo Grids bind to their data sources
+      container
+        .querySelectorAll<HTMLScriptElement>("script")
+        .forEach((orig: HTMLScriptElement) => {
+          if (!orig.textContent?.trim()) return;
+          try {
+            const s = document.createElement("script");
             s.textContent = orig.textContent;
+            document.head.appendChild(s);
+            s.remove();
+          } catch {
+            /* ignore */
           }
-          document.head.appendChild(s);
-          if (!orig.src) s.remove();
-        } catch {
-          /* ignore script errors */
-        }
-      });
+        });
     }, rawHtml);
 
-    const gridRendered = await page
-      .waitForSelector("#pw-detail-root .k-grid tbody tr", { timeout: 10000 })
-      .then(() => true)
-      .catch(() => false);
+    // Wait for network idle — this lets Kendo Grid finish all its AJAX data-source reads
+    await page
+      .waitForLoadState("networkidle", { timeout: 15000 })
+      .catch(() => {});
 
-    console.log(`[PlaywrightFetch] Kendo grid rendered: ${gridRendered}`);
+    // Also try to wait for any visible grid rows
+    await page
+      .waitForSelector("#pw-detail-root .k-grid tbody tr", { timeout: 8000 })
+      .catch(() => {});
 
-    const logRows: string[][] = await page
-      .$$eval(
-        "#pw-detail-root .k-grid tbody tr",
-        (rows: Element[]): string[][] =>
-          rows.map((row) =>
-            Array.from(row.querySelectorAll("td")).map(
-              (cell) => (cell as HTMLElement).innerText?.trim() ?? cell.textContent?.trim() ?? ""
-            )
-          )
-      )
-      .catch((): string[][] => []);
-
-    console.log(`[PlaywrightFetch] Log rows extracted: ${logRows.length}`);
-
-    const colHeaders: string[] = await page
-      .$$eval(
-        "#pw-detail-root .k-grid thead th",
-        (ths: Element[]): string[] =>
-          ths.map((th) => (th as HTMLElement).innerText?.trim() ?? th.textContent?.trim() ?? "")
-      )
-      .catch((): string[] => []);
-
-    const detailFields: Record<string, string> = await page.evaluate((): Record<string, string> => {
+    // Extract rendered DOM fields (may be richer than plain HTML parsing)
+    const domFields: Record<string, string> = await page.evaluate((): Record<string, string> => {
       const fields: Record<string, string> = {};
       const root = document.getElementById("pw-detail-root");
       if (!root) return fields;
@@ -161,20 +250,18 @@ export async function fetchTransactionDetailPlaywright(
         const dts = dl.querySelectorAll("dt");
         const dds = dl.querySelectorAll("dd");
         dts.forEach((dt: Element, i: number) => {
-          const key = dt.textContent?.trim().replace(/:$/, "") ?? "";
-          const val = dds[i]?.textContent?.trim() ?? "";
-          if (key && val) fields[key] = val;
+          const k = dt.textContent?.trim().replace(/:$/, "") ?? "";
+          const v = dds[i]?.textContent?.trim() ?? "";
+          if (k && v) fields[k] = v;
         });
       });
 
       root.querySelectorAll("tr").forEach((tr: Element) => {
         const cells = tr.querySelectorAll("td, th");
         if (cells.length === 2) {
-          const key = cells[0].textContent?.trim().replace(/:$/, "") ?? "";
-          const val = cells[1].textContent?.trim() ?? "";
-          if (key && val && !key.includes("\n") && key.length < 80) {
-            fields[key] = val;
-          }
+          const k = cells[0].textContent?.trim().replace(/:$/, "") ?? "";
+          const v = cells[1].textContent?.trim() ?? "";
+          if (k && v && !k.includes("\n") && k.length < 80) fields[k] = v;
         }
       });
 
@@ -189,59 +276,127 @@ export async function fetchTransactionDetailPlaywright(
       return fields;
     });
 
-    const rawLogs =
-      logRows.length > 0
-        ? logRows
-            .filter((r) => r.some((c) => c.length > 0))
-            .map((r) => r.join("\t"))
-            .join("\n")
-        : undefined;
-
-    const allText =
-      Object.values(detailFields).join(" ") +
-      " " +
-      (rawLogs ?? "") +
-      " " +
-      rawHtml;
-    const oids = extractOids(allText);
+    // Also extract rendered Kendo Grid rows directly from the DOM
+    const domGridRows: string[][] = await page
+      .$$eval(
+        "#pw-detail-root .k-grid tbody tr",
+        (rows: Element[]): string[][] =>
+          rows.map((row) =>
+            Array.from(row.querySelectorAll("td")).map(
+              (cell) =>
+                (cell as HTMLElement).innerText?.trim() ??
+                cell.textContent?.trim() ??
+                ""
+            )
+          )
+      )
+      .catch((): string[][] => []);
 
     console.log(
-      `[PlaywrightFetch] Done — fields: ${Object.keys(detailFields).length}, ` +
-        `log rows: ${logRows.length}, OIDs: ${oids.length}, ` +
-        `col headers: ${colHeaders.join("|") || "none"}`
+      `[PlaywrightFetch] Captured ${captured.length} intercepted responses, ` +
+      `${domGridRows.length} DOM grid rows, ${Object.keys(domFields).length} DOM fields`
     );
+
+    // ── Parse captured network responses ──────────────────────────────────────
+
+    // HTML fields parsed from static HTML (detail partial view, full page HTML)
+    const htmlFields = extractFieldsFromHtml(rawHtml);
+
+    // Find the best log data from captured responses:
+    //   preference: JSON (Kendo data source) > tab-separated text
+    let bestLogs: string | undefined;
+    let logSourceUrl: string | undefined;
+
+    for (const r of captured) {
+      const isJson =
+        r.contentType.includes("json") ||
+        r.body.trimStart().startsWith("{") ||
+        r.body.trimStart().startsWith("[");
+
+      if (isJson) {
+        const normalized = normalizeKendoJson(r.body);
+        if (normalized && normalized.length > (bestLogs?.length ?? 0)) {
+          bestLogs = normalized;
+          logSourceUrl = r.url;
+        }
+      } else {
+        // Tab-separated or plain text log lines
+        const hasCwFormat =
+          /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\t(Information|Warning|Error|Debug|Critical)/i.test(
+            r.body
+          );
+        if (hasCwFormat && r.body.length > (bestLogs?.length ?? 0)) {
+          bestLogs = r.body;
+          logSourceUrl = r.url;
+        }
+      }
+    }
+
+    // Fallback: if DOM scraping caught rows, use those
+    if (!bestLogs && domGridRows.length > 0) {
+      bestLogs = domGridRows
+        .filter((r) => r.some((c) => c.length > 0))
+        .map((r) => r.join("\t"))
+        .join("\n");
+      logSourceUrl = "Playwright DOM scrape";
+    }
+
+    console.log(
+      `[PlaywrightFetch] Log source: ${logSourceUrl ?? "none"}, ` +
+      `rows: ${bestLogs ? bestLogs.split("\n").length : 0}`
+    );
+
+    // Merge field sources: DOM rendering > HTML parsing (DOM is more complete)
+    const mergedFields: Record<string, string> = { ...htmlFields, ...domFields };
+
+    // Collect all HTML for OID extraction
+    const allText =
+      Object.values(mergedFields).join(" ") +
+      " " +
+      (bestLogs ?? "") +
+      " " +
+      rawHtml +
+      " " +
+      captured.map((r) => r.body).join(" ");
+    const oids = extractOids(allText);
 
     const detail: TransactionDetail = {
       transactionId,
-      rawFields: detailFields,
+      rawFields: mergedFields,
       oids,
       rawHtml,
-      rawLogs,
-      logEndpointUsed: rawLogs ? `Playwright → ${DETAIL_URL}` : undefined,
+      rawLogs: bestLogs,
+      logEndpointUsed: logSourceUrl
+        ? `Playwright → ${logSourceUrl}`
+        : undefined,
       endpointUsed: `Playwright → ${DETAIL_URL}`,
       timestamp:
-        detailFields["Start Time"] ??
-        detailFields["Timestamp"] ??
-        detailFields["Date"],
+        mergedFields["Start Time"] ??
+        mergedFields["Timestamp"] ??
+        mergedFields["Date"],
       transactionType:
-        detailFields["Transaction Type"] ?? detailFields["Type"],
+        mergedFields["Transaction Type"] ?? mergedFields["Type"],
       status:
-        detailFields["Transaction Status"] ?? detailFields["Status"],
+        mergedFields["Transaction Status"] ?? mergedFields["Status"],
       requestingOrg:
-        detailFields["Initiating Org Name"] ??
-        detailFields["Requesting Org Name"],
+        mergedFields["Initiating Org Name"] ??
+        mergedFields["Requesting Org Name"],
       requestingOid:
-        detailFields["Initiating Org ID"] ??
-        detailFields["Requesting OID"],
+        mergedFields["Initiating Org ID"] ??
+        mergedFields["Requesting OID"],
       responseCode:
-        detailFields["Status Code"] ??
-        detailFields["HTTP Status Code"] ??
-        detailFields["Response Code"],
-      errorCode: detailFields["Error Code"],
-      errorMessage:
-        detailFields["Error Message"] ?? detailFields["Error"],
-      duration: detailFields["Duration"] ?? detailFields["Elapsed"],
+        mergedFields["Status Code"] ??
+        mergedFields["HTTP Status Code"] ??
+        mergedFields["Response Code"],
+      errorCode: mergedFields["Error Code"],
+      errorMessage: mergedFields["Error Message"] ?? mergedFields["Error"],
+      duration: mergedFields["Duration"] ?? mergedFields["Elapsed"],
     };
+
+    console.log(
+      `[PlaywrightFetch] Final — fields: ${Object.keys(mergedFields).length}, ` +
+      `OIDs: ${oids.length}, logs: ${bestLogs ? "yes" : "no"}`
+    );
 
     return detail;
   } finally {
