@@ -112,6 +112,12 @@ export const api = {
       body: JSON.stringify({ transactionId, captureScreenshot }),
     }),
 
+  analyzeLogs: (logText: string, transactionId?: string) =>
+    apiRequest<AnalysisResult>("/api/analyze/logtext", {
+      method: "POST",
+      body: JSON.stringify({ logText, transactionId }),
+    }),
+
   batch: async (file: File, captureScreenshot = false): Promise<BatchResult> => {
     const formData = new FormData();
     formData.append("file", file);

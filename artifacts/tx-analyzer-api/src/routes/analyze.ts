@@ -201,6 +201,158 @@ export async function analyzeTransaction(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Log-text analysis
+// ---------------------------------------------------------------------------
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  component: string;
+  message: string;
+}
+
+function parseLogLines(text: string): LogEntry[] {
+  const entries: LogEntry[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    // Format: MM/DD/YYYY HH:MM:SS.mmm\tLevel\tComponent\tMessage
+    const m = line.match(/^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\t(\w+)\t([^\t]+)\t(.+)$/);
+    if (m) {
+      entries.push({ timestamp: m[1], level: m[2], message: m[4], component: m[3] });
+    } else {
+      // Append continuation lines to the last entry if they don't match the pattern
+      if (entries.length) entries[entries.length - 1].message += " " + line;
+    }
+  }
+  return entries;
+}
+
+function buildLogPrompt(transactionId: string, logText: string, orgs: Array<{ oid: string; name: string }>): string {
+  const orgLines = orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (none resolved)";
+
+  // Summarize errors for the prompt so Gemini doesn't have to scan 100+ lines
+  const entries = parseLogLines(logText);
+  const errors = entries.filter((e) => e.level === "Error" || e.level === "Warning");
+  const errorSummary = errors.length
+    ? errors.slice(0, 30).map((e) => `  [${e.level}][${e.component}] ${e.message}`).join("\n")
+    : "  (none)";
+
+  const capText = logText.length > 18000 ? logText.slice(0, 18000) + "\n...[truncated]" : logText;
+
+  return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
+
+Below are the RAW TRANSACTION LOG LINES for transaction ID "${transactionId}".
+The format is: Timestamp[TAB]Level[TAB]Component[TAB]Message
+Levels: Information, Warning, Error
+
+--- FULL LOG ---
+${capText}
+--- END LOG ---
+
+ERROR / WARNING SUMMARY (first 30):
+${errorSummary}
+
+OID RESOLUTION:
+${orgLines}
+
+INSTRUCTIONS:
+1. Identify the transaction type (patient search, document query, document retrieve, etc.).
+2. Identify EVERY organization involved — requester, broker, all fanout targets — and their roles.
+3. List all errors and classify them (timeout, inactive org, SSL, registry error, audience validation, unknown gateway, etc.).
+4. Determine overall transaction status (success / partial success / failure).
+5. Describe the end-to-end data brokering chain.
+6. Provide L1/L2 support analysis.
+7. Respond ONLY with a valid JSON object in this exact format (no markdown, no code block):
+{
+  "summary": "2-3 sentence plain-English description of what happened, who was involved, and the outcome",
+  "dataFlow": "One sentence describing the end-to-end data brokering chain, e.g. 'Org A (requester) → CVS Health (broker) → N orgs (fanout)'",
+  "rootCause": "Primary root cause of any errors, or 'No blocking errors detected'",
+  "organizations": [
+    {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
+  ],
+  "l1Actions": ["Concrete action L1 support should take immediately"],
+  "l2Actions": ["Engineering/escalation action if L1 cannot resolve"],
+  "severity": "low|medium|high|critical",
+  "resolution": "Recommended resolution path or 'No action required'"
+}`;
+}
+
+async function analyzeLogText(
+  logText: string,
+  transactionId: string
+): Promise<AnalysisResult> {
+  const oidRegex = /\d+(?:\.\d+){5,}/g;
+  const rawOids = [...new Set((logText.match(oidRegex) ?? []).filter((o) => o.startsWith("2.16.840") || o.startsWith("1.3.6")))];
+  const orgs = await resolveOidsWithLookup(rawOids);
+
+  // Build a synthetic TransactionDetail so the UI renders consistently
+  const entries = parseLogLines(logText);
+  const firstTs = entries[0]?.timestamp ?? "";
+  const lastTs = entries[entries.length - 1]?.timestamp ?? "";
+  const errors = entries.filter((e) => e.level === "Error");
+  const hasErrors = errors.length > 0;
+
+  // Try to detect transaction type from log messages
+  const allMessages = logText.toLowerCase();
+  let txType = "Unknown";
+  if (allMessages.includes("document retrieve") || allMessages.includes("getbinary")) txType = "DocumentRetrieve";
+  else if (allMessages.includes("document search") || allMessages.includes("document query")) txType = "DocumentQuery";
+  else if (allMessages.includes("patient search") || allMessages.includes("patient link")) txType = "PatientSearch";
+  else if (allMessages.includes("patient match")) txType = "PatientMatch";
+
+  const syntheticDetail: TransactionDetail = {
+    transactionId,
+    timestamp: firstTs,
+    transactionType: txType,
+    status: hasErrors ? "Partial/Error" : "Successful",
+    rawFields: {
+      "Transaction ID": transactionId,
+      "Start Time": firstTs,
+      "End Time": lastTs,
+      "Transaction Type": txType,
+      "Error Count": String(errors.length),
+      "Total Log Lines": String(entries.length),
+    },
+    oids: rawOids,
+  };
+
+  let ai: AnalysisResult["ai"];
+  try {
+    const model = createVertexModel();
+    const prompt = buildLogPrompt(transactionId, logText, orgs);
+    const { text } = await generateText({ model, prompt });
+    const cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+    const parsed = JSON.parse(cleaned) as AnalysisResult["ai"];
+
+    ai = {
+      summary: parsed.summary ?? "No summary available",
+      dataFlow: parsed.dataFlow ?? "",
+      rootCause: parsed.rootCause ?? "Unable to determine",
+      organizations: Array.isArray(parsed.organizations) ? parsed.organizations : orgs.map((o) => ({ ...o, role: "unknown" })),
+      l1Actions: Array.isArray(parsed.l1Actions) ? parsed.l1Actions : [],
+      l2Actions: Array.isArray(parsed.l2Actions) ? parsed.l2Actions : [],
+      severity: (["low", "medium", "high", "critical"].includes(parsed.severity) ? parsed.severity : "medium") as AnalysisResult["ai"]["severity"],
+      resolution: parsed.resolution ?? "No action required",
+    };
+  } catch (aiErr) {
+    console.warn(`[LogAnalyze] AI failed for ${transactionId}:`, (aiErr as Error).message);
+    ai = {
+      summary: `Log analysis for transaction ${transactionId} — ${errors.length} errors found across ${entries.length} log lines.`,
+      dataFlow: "",
+      rootCause: errors[0]?.message ?? "Unable to determine (AI unavailable)",
+      organizations: orgs.map((o) => ({ ...o, role: "unknown" })),
+      l1Actions: ["Review error lines manually"],
+      l2Actions: ["Escalate if errors are systemic"],
+      severity: hasErrors ? "high" : "low",
+      resolution: "Manual investigation required",
+    };
+  }
+
+  return { transactionId, detail: syntheticDetail, organizations: orgs, ai };
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   // Main analysis endpoint
   app.post("/api/analyze", async (req: Request, res: Response) => {
@@ -223,6 +375,24 @@ export function registerAnalyzeRoutes(app: Express): void {
     } catch (err) {
       const message = (err as Error).message;
       console.error(`[Analyze] Error for ${transactionId}:`, message);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // Log-text analysis — accepts raw pasted log lines, no portal fetch needed
+  app.post("/api/analyze/logtext", async (req: Request, res: Response) => {
+    const { logText, transactionId } = req.body as { logText?: string; transactionId?: string };
+    if (!logText?.trim()) {
+      res.status(400).json({ error: "logText is required" });
+      return;
+    }
+    const txId = transactionId?.trim() || "log-paste-" + Date.now();
+    try {
+      const result = await analyzeLogText(logText.trim(), txId);
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      console.error(`[LogAnalyze] Error for ${txId}:`, message);
       res.status(500).json({ error: message });
     }
   });
