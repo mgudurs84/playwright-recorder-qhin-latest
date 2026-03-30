@@ -157,25 +157,32 @@ ${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs resolved
 INSTRUCTIONS — answer every field below using the BROKER LOG LINES as the primary source when available:
 1. TRANSACTION CATEGORY: Classify as one of: Document Query, Document Retrieve, Patient Search, Patient Match, Document Submission, or Other.
 2. BROKERING CHAIN: Identify the full chain from log lines. Show: Initiating Org → CVS Health (broker) → each target org with its result (success/error/no match). If log lines are unavailable, say so explicitly.
-3. FANOUT ORG COUNT: Count the orgs the request was fanned out to from the log lines. Name each org and its outcome. If some failed, state why (error code, timeout, no match). If log lines are unavailable, say "Not determinable — broker log lines not fetched" and explain what IS known from the summary.
-4. DOCUMENTS FOUND / DOWNLOADED: From log lines, state how many docs each org returned and total docs returned. Which orgs returned docs? Which returned 0? Which failed with errors? If log lines are unavailable, state the known HTTP status and explicitly note that doc counts require checking the portal log lines tab manually.
+3. FANOUT ORG COUNT: If broker log lines are available above, count the unique orgs and state the number. If NOT available, use "unknown — check portal log tab". Do NOT write a sentence — this field is a SHORT label for a stats tile (max 8 words).
+4. DOCUMENTS FOUND: If broker log lines are available, state the count. If NOT available, use "unknown — check portal log tab" or "HTTP 200 — count in log tab". Do NOT write a sentence — this is a SHORT label for a stats tile (max 8 words).
 5. DURATION: Calculate from Start Time and End Time. Long durations (>1s) indicate broker fanout.
-6. ORGANIZATIONS: List every org with name (from OID resolution or log lines), OID, role, and outcome.
-7. L1/L2 ACTIONS: Be highly specific. Name the orgs with errors. Provide the error codes. State exactly what to check in each case. Do NOT give generic advice like "verify with the initiating org if they received data".
+6. ORGANIZATIONS: List every org with name (from OID resolution or log lines), OID, role, and outcome. Put per-org detail in the summary and l1Actions.
+7. L1/L2 ACTIONS: Be highly specific. If log lines were not available, the first L1 action MUST be "Open the portal transaction detail → Log Lines tab to see per-org fanout results and document counts." Then list any errors visible from the summary fields.
+
+CRITICAL FIELD LENGTH RULES — the stats bar tiles show these 4 fields directly:
+- "transactionCategory": max 4 words
+- "fanoutOrgCount": max 8 words, e.g. "104 organizations", "unknown — check log tab", "1 (direct)"
+- "documentsFound": max 8 words, e.g. "8 documents retrieved", "0", "unknown — check log tab"
+- "durationMs": max 10 chars, e.g. "4163ms", "unknown"
+Never put sentences or explanations in these four fields. Explanations go in summary, l1Actions, l2Actions.
 
 Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known), how many documents found (if applicable), and the outcome",
+  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known from log lines), how many documents found (if applicable), and the outcome. If log lines were unavailable, say so here and direct support to check the portal Log Lines tab.",
   "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
-  "fanoutOrgCount": "exact number or descriptive string, e.g. '104 organizations' or '1 (direct)' or 'unknown — brokered (~2s duration)'",
-  "documentsFound": "e.g. '3 documents' or '1 document retrieved' or '0' or 'unknown (HTTP 200)'",
+  "fanoutOrgCount": "SHORT label only — e.g. '104 organizations' or '1 (direct)' or 'unknown — check log tab'",
+  "documentsFound": "SHORT label only — e.g. '8 retrieved (29 fanout)' or '0' or 'unknown — check log tab'",
   "durationMs": "e.g. '3901ms' or 'unknown'",
   "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 member orgs (fanout)'",
   "rootCause": "Root cause of any errors, or 'No errors detected'",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
-  "l1Actions": ["Specific action L1 should take"],
+  "l1Actions": ["Specific action L1 should take — first action must be 'Check portal Log Lines tab' when log lines are unavailable"],
   "l2Actions": ["Engineering escalation action"],
   "severity": "low|medium|high|critical",
   "resolution": "Recommended resolution or 'No action required'"
@@ -210,13 +217,22 @@ export async function analyzeTransaction(
     const cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const parsed = JSON.parse(cleaned) as AnalysisResult["ai"];
 
+    // Enforce short stats-tile values: if Gemini returned a sentence, truncate to first clause
+    const trimStat = (val: string | undefined, fallback: string, maxChars = 50): string => {
+      const s = (val ?? fallback).trim();
+      // If it looks like a sentence (contains period or long phrase), truncate at first separator
+      if (s.length <= maxChars) return s;
+      const cut = s.search(/[.,(]/);
+      return cut > 0 ? s.slice(0, cut).trim() : s.slice(0, maxChars).trim();
+    };
+
     ai = {
       summary: parsed.summary ?? "No summary available",
       dataFlow: parsed.dataFlow ?? "",
-      transactionCategory: parsed.transactionCategory ?? "Unknown",
-      fanoutOrgCount: parsed.fanoutOrgCount ?? "unknown",
-      documentsFound: parsed.documentsFound ?? "unknown",
-      durationMs: parsed.durationMs ?? "unknown",
+      transactionCategory: trimStat(parsed.transactionCategory, "Unknown", 30),
+      fanoutOrgCount: trimStat(parsed.fanoutOrgCount, "unknown — check log tab"),
+      documentsFound: trimStat(parsed.documentsFound, "unknown — check log tab"),
+      durationMs: trimStat(parsed.durationMs, "unknown", 20),
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations)
         ? parsed.organizations
