@@ -69,6 +69,10 @@ export interface TransactionDetail {
 export interface AiAnalysis {
   summary: string;
   dataFlow: string;
+  transactionCategory: string;
+  fanoutOrgCount: string;
+  documentsFound: string;
+  durationMs: string;
   rootCause: string;
   organizations: Array<{ oid: string; name: string; role: string }>;
   l1Actions: string[];

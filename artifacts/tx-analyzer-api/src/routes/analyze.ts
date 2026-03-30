@@ -13,6 +13,10 @@ export interface AnalysisResult {
     summary: string;
     rootCause: string;
     dataFlow: string;
+    transactionCategory: string;
+    fanoutOrgCount: string;
+    documentsFound: string;
+    durationMs: string;
     organizations: Array<{ oid: string; name: string; role: string }>;
     l1Actions: string[];
     l2Actions: string[];
@@ -73,65 +77,94 @@ function buildPrompt(
   const hasStructured = structuredFields.trim().length > 0;
   const hasRaw = rawText && rawText.trim().length > 0;
 
+  // Calculate duration from start/end timestamps if available
+  const startTime = detail.rawFields["Start Time"] ?? detail.timestamp;
+  const endTime = detail.rawFields["End Time"];
+  let durationHint = "unknown";
+  if (startTime && endTime) {
+    try {
+      const diff = new Date(endTime).getTime() - new Date(startTime).getTime();
+      if (!isNaN(diff) && diff >= 0) durationHint = `${diff}ms`;
+    } catch { /* ignore */ }
+  }
+
+  // Infer transaction category from type and path
+  const txType = detail.rawFields["Transaction Type"] ?? detail.transactionType ?? "";
+  const path = detail.rawFields["Path"] ?? "";
+  const queryString = detail.rawFields["Query String"] ?? "";
+  let categoryHint = "unknown";
+  if (/binary/i.test(txType) || /binary/i.test(path)) categoryHint = "Document Retrieve (Binary)";
+  else if (/document.*ref/i.test(txType) || /DocumentReference/i.test(path)) categoryHint = "Document Query";
+  else if (/patient.*search|patientsearch/i.test(txType) || /\/Patient\b/i.test(path)) categoryHint = "Patient Search";
+  else if (/patient.*match/i.test(txType)) categoryHint = "Patient Match";
+  else if (/document.*query|docquery/i.test(txType)) categoryHint = "Document Query";
+
   return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
+CVS Health operates as the CommonWell broker/intermediary that fans out requests to member organizations.
 
 ${
   rawPayloadText
-    ? `Below is the RAW FHIR / MESSAGE PAYLOAD for this transaction. This is the actual wire-level content exchanged between systems — use it as the most authoritative source of data.
-
---- RAW FHIR / MESSAGE PAYLOAD ---
+    ? `--- RAW FHIR / MESSAGE PAYLOAD (most authoritative source) ---
 ${rawPayloadText}
---- END RAW FHIR / MESSAGE PAYLOAD ---
+--- END PAYLOAD ---
 
 `
     : ""
 }${
   hasRaw
-    ? `Below is the RAW PORTAL PAGE TEXT for this transaction. Extract all relevant fields from it directly — do not rely solely on the pre-parsed fields below, which may be incomplete.
-
---- RAW PORTAL PAGE TEXT ---
+    ? `--- RAW PORTAL PAGE TEXT ---
 ${rawText}
---- END RAW PORTAL PAGE TEXT ---
+--- END PORTAL PAGE TEXT ---
 
 `
     : ""
-}PRE-PARSED FIELDS (may be incomplete if portal HTML structure is non-standard):
+}EXTRACTED FIELDS:
 TRANSACTION ID: ${detail.transactionId}
-STATUS: ${detail.status ?? "unknown"}
-TYPE: ${detail.transactionType ?? "unknown"}
-TIMESTAMP: ${detail.timestamp ?? "unknown"}
-REQUESTING ORG: ${detail.requestingOrg ?? orgMap[detail.requestingOid ?? ""] ?? detail.requestingOid ?? "unknown"}
-RESPONDING ORG: ${detail.respondingOrg ?? orgMap[detail.respondingOid ?? ""] ?? detail.respondingOid ?? "unknown"}
+TRANSACTION TYPE: ${txType}
+INFERRED CATEGORY: ${categoryHint}
+STATUS: ${detail.rawFields["Transaction Status"] ?? detail.status ?? "unknown"}
+HTTP STATUS CODE: ${detail.rawFields["Status Code"] ?? detail.responseCode ?? "unknown"}
+START TIME: ${startTime ?? "unknown"}
+END TIME: ${endTime ?? "unknown"}
+CALCULATED DURATION: ${durationHint}
+HTTP METHOD: ${detail.rawFields["Http Method"] ?? "unknown"}
+PATH: ${path}
+QUERY STRING: ${queryString}
+INITIATING ORG ID: ${detail.rawFields["Initiating Org ID"] ?? detail.requestingOid ?? "unknown"}
+INITIATING ORG NAME: ${detail.rawFields["Initiating Org Name"] ?? detail.requestingOrg ?? "unknown"}
+MEMBER: ${detail.rawFields["Member Name"] ?? "unknown"}
 ERROR CODE: ${detail.errorCode ?? "none"}
 ERROR MESSAGE: ${detail.errorMessage ?? "none"}
-RESPONSE CODE: ${detail.responseCode ?? "unknown"}
-DURATION: ${detail.duration ?? "unknown"}
 
-${hasStructured ? `ADDITIONAL EXTRACTED FIELDS:\n${structuredFields}\n` : ""}
-OID RESOLUTION:
-${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs found)"}
+${hasStructured ? `ALL EXTRACTED FIELDS:\n${structuredFields}\n` : ""}
+OID-TO-ORG RESOLUTION:
+${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs resolved)"}
 
-INSTRUCTIONS:
-1. Read the raw page text above and extract the actual transaction fields (status, type, timestamp, OIDs, errors, etc.) — treat it as authoritative over the pre-parsed fields.
-2. Identify EVERY organization mentioned in the transaction, including requesters, responders, intermediaries, and any data brokers or relay systems. Assign each a clear role.
-3. Describe the full data brokering chain — how did data flow from source to destination through each organization?
-4. Perform a thorough L1/L2 support analysis.
-5. Respond ONLY with a valid JSON object in this exact format (no markdown, no code block):
+INSTRUCTIONS — answer every field below:
+1. TRANSACTION CATEGORY: Classify as one of: Document Query, Document Retrieve, Patient Search, Patient Match, Document Submission, or Other.
+2. BROKERING CHAIN: Identify the full chain. CVS Health (Member Name field) is typically the broker/intermediary. Show: Initiating Org → CVS Health (broker) → [target orgs if known].
+3. FANOUT ORG COUNT: How many organizations was this brokered out to? Use exact number if visible in page text (e.g. "104 organizations") or log lines. Use "1 (direct)" for point-to-point, or "unknown — brokered" if duration suggests a fanout (>1000ms) but count is not in the data.
+4. DOCUMENTS FOUND / DOWNLOADED: For Document Query (DocumentReference path), state how many documents were returned if visible. For Document Retrieve (Binary path), state "1 document retrieved". If status is 200 but count is not in the data, state "≥0 (HTTP 200, exact count not in portal view)".
+5. DURATION: Calculate from Start Time and End Time. Long durations (>1s) indicate broker fanout.
+6. ORGANIZATIONS: List every org — use OID resolution above for names. Assign roles: requester, broker, responder.
+7. L1/L2 ACTIONS: Give concrete, specific actions — not generic advice.
+
+Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "2-3 sentence plain-English description of what happened, who was involved, and the outcome",
-  "dataFlow": "One sentence describing the end-to-end data brokering chain, e.g. 'Org A (requester) → CVS Health (broker/intermediary) → Org B (responder)'",
-  "rootCause": "identified root cause or 'No errors detected'",
+  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known), how many documents found (if applicable), and the outcome",
+  "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
+  "fanoutOrgCount": "exact number or descriptive string, e.g. '104 organizations' or '1 (direct)' or 'unknown — brokered (~2s duration)'",
+  "documentsFound": "e.g. '3 documents' or '1 document retrieved' or '0' or 'unknown (HTTP 200)'",
+  "durationMs": "e.g. '3901ms' or 'unknown'",
+  "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 member orgs (fanout)'",
+  "rootCause": "Root cause of any errors, or 'No errors detected'",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
-  "l1Actions": [
-    "Concrete action L1 support should take immediately"
-  ],
-  "l2Actions": [
-    "Engineering/escalation action if L1 cannot resolve"
-  ],
+  "l1Actions": ["Specific action L1 should take"],
+  "l2Actions": ["Engineering escalation action"],
   "severity": "low|medium|high|critical",
-  "resolution": "Recommended resolution path or 'No action required'"
+  "resolution": "Recommended resolution or 'No action required'"
 }`;
 }
 
@@ -166,6 +199,10 @@ export async function analyzeTransaction(
     ai = {
       summary: parsed.summary ?? "No summary available",
       dataFlow: parsed.dataFlow ?? "",
+      transactionCategory: parsed.transactionCategory ?? "Unknown",
+      fanoutOrgCount: parsed.fanoutOrgCount ?? "unknown",
+      documentsFound: parsed.documentsFound ?? "unknown",
+      durationMs: parsed.durationMs ?? "unknown",
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations)
         ? parsed.organizations
@@ -187,6 +224,10 @@ export async function analyzeTransaction(
     ai = {
       summary: `Transaction ${transactionId} — status: ${detail.status ?? "unknown"}`,
       dataFlow: "",
+      transactionCategory: "Unknown",
+      fanoutOrgCount: "unknown",
+      documentsFound: "unknown",
+      durationMs: "unknown",
       rootCause: detail.errorMessage ?? "Unable to determine (AI unavailable)",
       organizations: orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: ["Review transaction details manually"],
@@ -264,18 +305,22 @@ INSTRUCTIONS:
 4. Determine overall transaction status (success / partial success / failure).
 5. Describe the end-to-end data brokering chain.
 6. Provide L1/L2 support analysis.
-7. Respond ONLY with a valid JSON object in this exact format (no markdown, no code block):
+7. Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "2-3 sentence plain-English description of what happened, who was involved, and the outcome",
-  "dataFlow": "One sentence describing the end-to-end data brokering chain, e.g. 'Org A (requester) → CVS Health (broker) → N orgs (fanout)'",
+  "summary": "3-4 sentence description: operation type, requesting org, broker, fanout org count, documents/patients found, overall outcome",
+  "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
+  "fanoutOrgCount": "exact number from logs e.g. '104 organizations' or '14 (TEFCA)' or '1 (direct)'",
+  "documentsFound": "e.g. '3 documents' or '0' or '1 patient matched'",
+  "durationMs": "total duration from first to last log timestamp, e.g. '2044ms'",
+  "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 orgs (fanout)'",
   "rootCause": "Primary root cause of any errors, or 'No blocking errors detected'",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
-  "l1Actions": ["Concrete action L1 support should take immediately"],
-  "l2Actions": ["Engineering/escalation action if L1 cannot resolve"],
+  "l1Actions": ["Specific L1 action"],
+  "l2Actions": ["Engineering escalation action"],
   "severity": "low|medium|high|critical",
-  "resolution": "Recommended resolution path or 'No action required'"
+  "resolution": "Recommended resolution or 'No action required'"
 }`;
 }
 
@@ -329,6 +374,10 @@ async function analyzeLogText(
     ai = {
       summary: parsed.summary ?? "No summary available",
       dataFlow: parsed.dataFlow ?? "",
+      transactionCategory: parsed.transactionCategory ?? txType,
+      fanoutOrgCount: parsed.fanoutOrgCount ?? "unknown",
+      documentsFound: parsed.documentsFound ?? "unknown",
+      durationMs: parsed.durationMs ?? "unknown",
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations) ? parsed.organizations : orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: Array.isArray(parsed.l1Actions) ? parsed.l1Actions : [],
@@ -341,6 +390,10 @@ async function analyzeLogText(
     ai = {
       summary: `Log analysis for transaction ${transactionId} — ${errors.length} errors found across ${entries.length} log lines.`,
       dataFlow: "",
+      transactionCategory: txType,
+      fanoutOrgCount: "unknown",
+      documentsFound: "unknown",
+      durationMs: "unknown",
       rootCause: errors[0]?.message ?? "Unable to determine (AI unavailable)",
       organizations: orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: ["Review error lines manually"],
