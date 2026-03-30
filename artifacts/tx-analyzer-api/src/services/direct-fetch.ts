@@ -5,8 +5,13 @@ const PORTAL_URL = process.env.CW_PORTAL_URL ?? "https://integration.commonwella
 const FALLBACK_DETAIL_URL = `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailPartialView`;
 
 const BASE_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
   "Accept-Language": "en-US,en;q=0.9",
+  // Fetch metadata headers — Chrome adds these automatically to every XHR/fetch.
+  // The portal WAF may reject requests that lack them.
+  "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"macOS"',
 };
 
 export interface TransactionDetail {
@@ -428,6 +433,9 @@ async function postDetail(
     "X-Requested-With": "XMLHttpRequest",
     Origin: PORTAL_URL,
     Referer: `${PORTAL_URL}/TransactionLogs/index`,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
   };
 
   // CSRF token goes in the request header (browser sends it this way)
@@ -491,6 +499,11 @@ async function fetchRawPayload(
     Cookie: cookieHeader,
     "X-Requested-With": "XMLHttpRequest",
     Accept: "application/json, application/xml, text/xml, text/html, */*",
+    Origin: PORTAL_URL,
+    Referer: `${PORTAL_URL}/TransactionLogs/index`,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
     ...(formToken ? { "__RequestVerificationToken": formToken } : {}),
   };
 
@@ -746,7 +759,11 @@ async function fetchLogLines(
     Cookie: cookieHeader,
     "X-Requested-With": "XMLHttpRequest",
     Accept: "text/html, application/json, */*",
+    Origin: PORTAL_URL,
     Referer: `${PORTAL_URL}/TransactionLogs/index`,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
     ...(formToken ? { "__RequestVerificationToken": formToken } : {}),
   };
 
