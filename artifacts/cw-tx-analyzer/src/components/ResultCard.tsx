@@ -8,6 +8,22 @@ const SEVERITY_COLORS: Record<string, string> = {
   critical: "bg-red-100 text-red-800 border-red-200",
 };
 
+const ROLE_COLORS: Record<string, string> = {
+  requester: "bg-blue-50 text-blue-700 border-blue-200",
+  responder: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  intermediary: "bg-purple-50 text-purple-700 border-purple-200",
+  broker: "bg-purple-50 text-purple-700 border-purple-200",
+  unknown: "bg-secondary text-secondary-foreground border-border",
+};
+
+const ROLE_ARROW: Record<string, string> = {
+  requester: "→",
+  intermediary: "⇄",
+  broker: "⇄",
+  responder: "",
+  unknown: "→",
+};
+
 interface ResultCardProps {
   result: AnalysisResult;
   screenshotsEnabled?: boolean;
@@ -20,6 +36,34 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
 
   const { ai, detail, organizations } = result;
   const severityClass = SEVERITY_COLORS[ai.severity] ?? SEVERITY_COLORS.medium;
+
+  // Build a deduplicated org list: merge AI-identified orgs (have roles) with OID-resolved orgs
+  const aiOrgMap = new Map(ai.organizations.map((o) => [o.oid, o]));
+  const resolvedOrgMap = new Map(organizations.map((o) => [o.oid, o.name]));
+
+  // All orgs: AI ones first, then any extra from OID resolution that AI missed
+  const allOrgs: Array<{ oid: string; name: string; role: string }> = [
+    ...ai.organizations,
+    ...organizations
+      .filter((o) => !aiOrgMap.has(o.oid))
+      .map((o) => ({ oid: o.oid, name: o.name, role: "unknown" })),
+  ].map((o) => ({
+    ...o,
+    // Prefer the resolved org name if available
+    name: resolvedOrgMap.get(o.oid) ?? o.name,
+  }));
+
+  // Order for data flow: requester → intermediary/broker → responder
+  const roleOrder: Record<string, number> = {
+    requester: 0,
+    intermediary: 1,
+    broker: 1,
+    responder: 2,
+    unknown: 3,
+  };
+  const flowOrgs = [...allOrgs].sort(
+    (a, b) => (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3)
+  );
 
   async function loadScreenshot() {
     setLoadingScreenshot(true);
@@ -35,6 +79,7 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
 
   return (
     <div className="bg-card border border-border rounded-xl shadow-sm overflow-hidden">
+      {/* Header row */}
       <div
         className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-muted/30 transition"
         onClick={() => setExpanded((p) => !p)}
@@ -56,13 +101,14 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
       </div>
 
       {expanded && (
-        <div className="px-5 pb-5 space-y-4 border-t border-border/60">
+        <div className="px-5 pb-5 space-y-5 border-t border-border/60">
           {result.error && (
             <div className="mt-4 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               Error: {result.error}
             </div>
           )}
 
+          {/* Transaction metadata */}
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
             <MetaRow label="Status" value={detail.status} />
             <MetaRow label="Type" value={detail.transactionType} />
@@ -72,25 +118,50 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
             <MetaRow label="Error Code" value={detail.errorCode} />
           </div>
 
-          {organizations.length > 0 && (
+          {/* Data flow chain */}
+          {flowOrgs.length > 0 && (
             <div>
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                Organizations
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Data Flow
               </h4>
-              <div className="flex flex-wrap gap-2">
-                {organizations.map((org) => (
-                  <span
-                    key={org.oid}
-                    className="text-xs bg-secondary text-secondary-foreground rounded-md px-2.5 py-1 border border-secondary-border/50"
-                    title={org.oid}
-                  >
-                    {org.name !== org.oid ? org.name : org.oid}
-                  </span>
-                ))}
+
+              {/* Visual chain */}
+              <div className="flex flex-wrap items-center gap-1 mb-3">
+                {flowOrgs.map((org, i) => {
+                  const roleColor = ROLE_COLORS[org.role] ?? ROLE_COLORS.unknown;
+                  const isLast = i === flowOrgs.length - 1;
+                  const arrow = ROLE_ARROW[org.role] ?? "→";
+                  return (
+                    <div key={org.oid} className="flex items-center gap-1">
+                      <div className={`flex flex-col rounded-lg border px-3 py-2 ${roleColor}`}>
+                        <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-0.5">
+                          {org.role}
+                        </span>
+                        <span className="text-xs font-semibold leading-tight">
+                          {org.name !== org.oid ? org.name : org.oid}
+                        </span>
+                        <span className="text-[10px] font-mono opacity-50 mt-0.5 truncate max-w-[180px]">
+                          {org.oid}
+                        </span>
+                      </div>
+                      {!isLast && (
+                        <span className="text-muted-foreground font-bold text-sm px-1">{arrow}</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* AI data flow sentence */}
+              {ai.dataFlow && (
+                <p className="text-xs text-muted-foreground italic border-l-2 border-border pl-2">
+                  {ai.dataFlow}
+                </p>
+              )}
             </div>
           )}
 
+          {/* Summary */}
           <div>
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
               Summary
@@ -98,6 +169,7 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
             <p className="text-sm text-foreground leading-relaxed">{ai.summary}</p>
           </div>
 
+          {/* Root cause */}
           <div>
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
               Root Cause

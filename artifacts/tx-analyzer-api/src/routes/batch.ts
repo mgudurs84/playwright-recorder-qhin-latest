@@ -43,6 +43,7 @@ async function runBatch(
             organizations: [],
             ai: {
               summary: "Error fetching transaction",
+              dataFlow: "",
               rootCause: (err as Error).message,
               organizations: [],
               l1Actions: ["Verify transaction ID and session"],

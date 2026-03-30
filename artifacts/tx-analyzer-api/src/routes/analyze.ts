@@ -12,6 +12,7 @@ export interface AnalysisResult {
   ai: {
     summary: string;
     rootCause: string;
+    dataFlow: string;
     organizations: Array<{ oid: string; name: string; role: string }>;
     l1Actions: string[];
     l2Actions: string[];
@@ -96,15 +97,17 @@ OID RESOLUTION:
 ${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs found)"}
 
 INSTRUCTIONS:
-1. Read the raw page text above and extract the actual transaction fields (status, type, timestamp, requesting/responding org, OIDs, errors, etc.) even if the pre-parsed fields show "unknown".
-2. Use the extracted data to perform a thorough L1/L2 support analysis.
-3. If the page text contains a valid transaction but the pre-parsed fields missed them, treat the page text as authoritative.
-4. Respond ONLY with a valid JSON object in this exact format (no markdown, no code block):
+1. Read the raw page text above and extract the actual transaction fields (status, type, timestamp, OIDs, errors, etc.) — treat it as authoritative over the pre-parsed fields.
+2. Identify EVERY organization mentioned in the transaction, including requesters, responders, intermediaries, and any data brokers or relay systems. Assign each a clear role.
+3. Describe the full data brokering chain — how did data flow from source to destination through each organization?
+4. Perform a thorough L1/L2 support analysis.
+5. Respond ONLY with a valid JSON object in this exact format (no markdown, no code block):
 {
-  "summary": "1-2 sentence plain-English description of what happened",
+  "summary": "2-3 sentence plain-English description of what happened, who was involved, and the outcome",
+  "dataFlow": "One sentence describing the end-to-end data brokering chain, e.g. 'Org A (requester) → CVS Health (broker/intermediary) → Org B (responder)'",
   "rootCause": "identified root cause or 'No errors detected'",
   "organizations": [
-    {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary"}
+    {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
   "l1Actions": [
     "Concrete action L1 support should take immediately"
@@ -147,6 +150,7 @@ export async function analyzeTransaction(
 
     ai = {
       summary: parsed.summary ?? "No summary available",
+      dataFlow: parsed.dataFlow ?? "",
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations)
         ? parsed.organizations
@@ -167,6 +171,7 @@ export async function analyzeTransaction(
     );
     ai = {
       summary: `Transaction ${transactionId} — status: ${detail.status ?? "unknown"}`,
+      dataFlow: "",
       rootCause: detail.errorMessage ?? "Unable to determine (AI unavailable)",
       organizations: orgs.map((o) => ({ ...o, role: "unknown" })),
       l1Actions: ["Review transaction details manually"],
