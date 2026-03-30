@@ -78,9 +78,31 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
   const rawFields: Record<string, string> = {};
 
   const set = (k: string, v: string) => {
-    const key = k.replace(/\s+/g, " ").trim();
+    // Normalize whitespace; strip trailing colon from label
+    const key = k.replace(/\s+/g, " ").replace(/:$/, "").trim();
     const val = v.replace(/\s+/g, " ").trim();
-    if (key && val && key.length < 120 && val.length > 0) rawFields[key] = val;
+
+    // Basic guards
+    if (!key || !val) return;
+    if (key.length > 80 || val.length === 0) return;
+
+    // First write wins — later strategies may produce noisier data
+    if (rawFields[key] !== undefined) return;
+
+    // Reject JavaScript artifacts (leaked <script> text)
+    if (/\$\s*\(|function\s*\(|\bvar\b|\bconst\b|\blet\b/.test(val)) return;
+
+    // Reject if key is a UUID / transaction-ID hex string
+    if (/^[0-9a-f]{16,}$/i.test(key)) return;
+
+    // Reject single- or double-char keys (likely URL param fragments)
+    if (key.length <= 2) return;
+
+    // Reject values that look like entire section text (contain 3+ "Word: value" pairs)
+    const inlinePairs = (val.match(/\b\w[\w ]{1,30}:\s+\S/g) ?? []).length;
+    if (inlinePairs > 2) return;
+
+    rawFields[key] = val;
   };
 
   // Strategy 1: <tr> with 2+ <td> cells
@@ -176,15 +198,23 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     }
 
     // 9b: label-only line ending with ":" — value is on the next non-empty line
+    // Common in Bootstrap grid where <label> and <span> render on separate text lines.
     if (line.endsWith(":") && line.length > 2 && line.length <= 80 && !line.includes("/") && !line.includes("http")) {
       const key = line.slice(0, -1).trim();
       // Look ahead up to 3 lines for the value
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
         const nextLine = lines[j];
-        if (nextLine && !nextLine.endsWith(":") && nextLine.length < 300) {
-          set(key, nextLine);
-          break;
-        }
+        if (!nextLine) continue;
+        if (nextLine.endsWith(":")) continue; // another label — keep looking
+        if (nextLine.length >= 300) break;    // too long — likely bulk text
+
+        // Reject next-line if it looks like a section heading:
+        // e.g. "Response Detail", "Request Detail", "Transaction Detail", "Original Claims"
+        const isSectionHeading = /^([A-Z][a-z]+\s+){1,3}[A-Z][a-z]+$/.test(nextLine) && nextLine.split(" ").length <= 4;
+        if (isSectionHeading) break;
+
+        set(key, nextLine);
+        break;
       }
     }
   }
