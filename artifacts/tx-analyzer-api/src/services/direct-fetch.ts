@@ -247,12 +247,24 @@ export async function fetchTransactionDetail(transactionId: string): Promise<Tra
   const formToken = await fetchCsrfFormToken(cookieHeader);
 
   const endpoints = loadEndpoints();
-  const detailUrl =
-    endpoints?.detailHtml ??
-    endpoints?.all.find(
-      (e) => e.url.includes("Detail") || e.url.includes("LoadTransaction")
-    )?.url ??
-    FALLBACK_DETAIL_URL;
+
+  // Only accept a discovered URL if it genuinely points to a detail endpoint.
+  // "List" and "Index" endpoints must never be used here.
+  const isDetailEndpoint = (url: string): boolean => {
+    const u = url.toLowerCase();
+    return (
+      u.includes("detail") &&
+      !u.includes("list") &&
+      !u.includes("index")
+    );
+  };
+
+  const discoveredDetail =
+    endpoints?.detailHtml && isDetailEndpoint(endpoints.detailHtml)
+      ? endpoints.detailHtml
+      : endpoints?.all.find((e) => isDetailEndpoint(e.url))?.url;
+
+  const detailUrl = discoveredDetail ?? FALLBACK_DETAIL_URL;
 
   console.log(`[DirectFetch] Fetching detail for ${transactionId} via ${detailUrl}`);
 

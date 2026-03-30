@@ -218,11 +218,13 @@ async function runNetworkDiscovery(p: Page): Promise<DiscoveredEndpoints> {
     console.warn("[Discovery] Navigation failed:", (err as Error).message);
   }
 
-  const detailEntry = captured.find(
-    (e) => e.url.includes("DetailPartialView") || e.url.includes("Detail") && e.method === "POST"
-  );
+  // Must include "Detail" and must NOT be a list/index page
+  const detailEntry = captured.find((e) => {
+    const u = e.url.toLowerCase();
+    return u.includes("detail") && !u.includes("list") && !u.includes("index");
+  });
   const jsonEntry = captured.find(
-    (e) => e.url.includes("json") || e.url.includes("data") && e.contentType.includes("json")
+    (e) => e.url.includes("json") || (e.url.includes("data") && e.contentType.includes("json"))
   );
   const orgEntry = captured.find(
     (e) => e.url.toLowerCase().includes("org") || e.url.toLowerCase().includes("organization")
