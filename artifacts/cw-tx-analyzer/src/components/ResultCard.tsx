@@ -29,10 +29,35 @@ interface ResultCardProps {
   screenshotsEnabled?: boolean;
 }
 
+type ActiveTab = "analysis" | "portal-logs";
+
+/** Parse tab-separated CW log lines into structured rows */
+function parseLogRows(raw: string): Array<{ ts: string; level: string; component: string; message: string }> {
+  return raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      if (parts.length >= 4) {
+        return { ts: parts[0], level: parts[1], component: parts[2], message: parts.slice(3).join("\t") };
+      }
+      return { ts: "", level: "", component: "", message: line };
+    });
+}
+
+const LEVEL_COLORS: Record<string, string> = {
+  Information: "text-blue-600",
+  Warning:     "text-yellow-600",
+  Error:       "text-red-600",
+  Critical:    "text-red-700 font-bold",
+  Debug:       "text-gray-400",
+};
+
 export function ResultCard({ result, screenshotsEnabled = false }: ResultCardProps) {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(result.screenshotUrl ?? null);
   const [loadingScreenshot, setLoadingScreenshot] = useState(false);
   const [expanded, setExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("analysis");
 
   const { ai, detail, organizations } = result;
   const severityClass = SEVERITY_COLORS[ai.severity] ?? SEVERITY_COLORS.medium;
@@ -108,6 +133,28 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
             </div>
           )}
 
+          {/* Tab switcher */}
+          <div className="mt-4 flex gap-1 border-b border-border/60">
+            {(["analysis", "portal-logs"] as ActiveTab[]).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-4 py-2 text-xs font-semibold rounded-t-md transition-colors ${
+                  activeTab === tab
+                    ? "bg-background border border-b-background border-border/60 text-foreground -mb-px"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab === "analysis" ? "Analysis" : "Portal Logs"}
+                {tab === "portal-logs" && detail.rawLogs && (
+                  <span className="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full text-[10px]">
+                    {parseLogRows(detail.rawLogs).length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
           {/* Key stats bar */}
           <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatBox
@@ -133,6 +180,9 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
               value={ai.durationMs ?? detail.duration ?? "—"}
             />
           </div>
+
+          {/* ── ANALYSIS TAB ── */}
+          {activeTab === "analysis" && (<>
 
           {/* Transaction metadata */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
@@ -274,6 +324,60 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
               )}
             </div>
           )}
+
+          {/* end analysis tab */}
+          </>)}
+
+          {/* ── PORTAL LOGS TAB ── */}
+          {activeTab === "portal-logs" && (
+            <div>
+              {detail.logEndpointUsed && (
+                <p className="text-[11px] font-mono text-muted-foreground mb-3 break-all">
+                  Source: <span className="text-foreground">{detail.logEndpointUsed}</span>
+                </p>
+              )}
+
+              {detail.rawLogs ? (() => {
+                const rows = parseLogRows(detail.rawLogs);
+                return (
+                  <div className="overflow-x-auto rounded-lg border border-border">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-muted/60 border-b border-border">
+                          <th className="text-left px-3 py-2 font-semibold text-muted-foreground whitespace-nowrap">Timestamp</th>
+                          <th className="text-left px-3 py-2 font-semibold text-muted-foreground whitespace-nowrap">Level</th>
+                          <th className="text-left px-3 py-2 font-semibold text-muted-foreground whitespace-nowrap">Component</th>
+                          <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Message</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row, i) => (
+                          <tr key={i} className={`border-b border-border/40 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
+                            <td className="px-3 py-1.5 font-mono whitespace-nowrap text-muted-foreground">{row.ts}</td>
+                            <td className={`px-3 py-1.5 font-semibold whitespace-nowrap ${LEVEL_COLORS[row.level] ?? "text-foreground"}`}>
+                              {row.level}
+                            </td>
+                            <td className="px-3 py-1.5 text-muted-foreground whitespace-nowrap">{row.component}</td>
+                            <td className="px-3 py-1.5 text-foreground break-all">{row.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })() : (
+                <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+                  No portal log data available for this transaction.
+                  <br />
+                  <span className="text-xs mt-1 block">
+                    Portal logs are fetched automatically during analysis — re-run if missing, or use the
+                    <span className="font-semibold text-foreground"> Paste Log Text</span> tab for broker logs.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
         </div>
       )}
     </div>

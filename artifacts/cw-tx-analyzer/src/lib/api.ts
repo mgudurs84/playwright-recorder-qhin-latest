@@ -64,6 +64,10 @@ export interface TransactionDetail {
   endpointUsed?: string;
   rawPayload?: string;
   payloadEndpointUsed?: string;
+  /** Tab-separated log lines from BindTransactionLogsHistory */
+  rawLogs?: string;
+  /** The endpoint URL that served rawLogs */
+  logEndpointUsed?: string;
 }
 
 export interface AiAnalysis {
