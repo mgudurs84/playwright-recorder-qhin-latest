@@ -51,6 +51,9 @@ Thumbs.db
 # Runtime-generated data (not source code)
 artifacts/api-server/data/hourly-snapshots.json
 
+# Debug/investigation assets uploaded during development — never commit
+attached_assets/
+
 # Local environment secrets — never commit real credentials
 .env
 .env.local
