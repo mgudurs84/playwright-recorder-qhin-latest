@@ -77,28 +77,94 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
   const root = parseHtml(html);
   const rawFields: Record<string, string> = {};
 
+  const set = (k: string, v: string) => {
+    const key = k.replace(/\s+/g, " ").trim();
+    const val = v.replace(/\s+/g, " ").trim();
+    if (key && val && key.length < 120 && val.length > 0) rawFields[key] = val;
+  };
+
+  // Strategy 1: <tr> with 2+ <td> cells
   root.querySelectorAll("tr").forEach((row) => {
     const cells = row.querySelectorAll("td");
-    if (cells.length >= 2) {
-      rawFields[cells[0].text.trim()] = cells[1].text.trim();
-    }
+    if (cells.length >= 2) set(cells[0].text, cells[1].text);
   });
 
-  root.querySelectorAll("dl dt").forEach((dt) => {
+  // Strategy 2: <tr> with <th> label + <td> value
+  root.querySelectorAll("tr").forEach((row) => {
+    const th = row.querySelector("th");
+    const td = row.querySelector("td");
+    if (th && td) set(th.text, td.text);
+  });
+
+  // Strategy 3: <dl><dt> + <dd>
+  root.querySelectorAll("dt").forEach((dt) => {
     const dd = dt.nextElementSibling;
-    if (dd && dd.tagName === "DD") {
-      rawFields[dt.text.trim()] = dd.text.trim();
+    if (dd && dd.tagName === "DD") set(dt.text, dd.text);
+  });
+
+  // Strategy 4: <label> + next sibling element (Bootstrap / generic forms)
+  root.querySelectorAll("label").forEach((label) => {
+    const next = label.nextElementSibling;
+    if (next) {
+      const val = next.getAttribute("value") ?? next.text;
+      set(label.text.replace(/:$/, ""), val);
+    }
+    // Also check parent's next sibling (two-column grid layout)
+    const parent = label.parentNode;
+    if (parent) {
+      const parentNext = (parent as typeof label).nextElementSibling;
+      if (parentNext) set(label.text.replace(/:$/, ""), parentNext.text);
     }
   });
 
-  root.querySelectorAll(".field-label, .label").forEach((label) => {
-    const value = label.nextElementSibling;
-    if (value) {
-      rawFields[label.text.trim()] = value.text.trim();
+  // Strategy 5: Any element with class containing "label", "field-name", "caption", "key"
+  const labelClassPattern = /\b(label|field[-_]?name|field[-_]?label|caption|form[-_]?label|col[-_]?form[-_]?label)\b/i;
+  root.querySelectorAll("*").forEach((el) => {
+    const cls = el.getAttribute("class") ?? "";
+    if (labelClassPattern.test(cls)) {
+      const next = el.nextElementSibling;
+      if (next) set(el.text.replace(/:$/, ""), next.text);
     }
   });
 
+  // Strategy 6: Kendo UI field patterns (k-label, k-form-field)
+  root.querySelectorAll(".k-label, .k-form-field label, .k-form-label").forEach((el) => {
+    const next = el.nextElementSibling;
+    if (next) set(el.text.replace(/:$/, ""), next.text);
+  });
+
+  // Strategy 7: data-field attribute on any element — use it as the key
+  root.querySelectorAll("[data-field]").forEach((el) => {
+    const field = el.getAttribute("data-field");
+    if (field) set(field, el.text);
+  });
+
+  // Strategy 8: Bootstrap card/list-group items — alternating label/value children
+  root.querySelectorAll(".list-group-item, .card-body > .row").forEach((container) => {
+    const children = container.childNodes.filter(
+      (n) => n.nodeType === 1 && (n as typeof root).text.trim().length > 0
+    ) as typeof root[];
+    for (let i = 0; i + 1 < children.length; i += 2) {
+      set(children[i].text.replace(/:$/, ""), children[i + 1].text);
+    }
+  });
+
+  // Strategy 9: Text-level regex — extract "Some Label: some value" patterns from plain text
+  // This is the ultimate fallback and works regardless of HTML structure.
   const allText = root.text;
+  const linePatterns = allText.split(/[\n\r]+/);
+  for (const line of linePatterns) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx > 2 && colonIdx < 60) {
+      const key = line.slice(0, colonIdx).trim();
+      const val = line.slice(colonIdx + 1).trim();
+      // Only add if key looks like a field name (no URL-like content)
+      if (key && val && !key.includes("/") && !key.includes("http") && !/^\d+$/.test(key)) {
+        set(key, val);
+      }
+    }
+  }
+
   const oids = extractOids(allText);
 
   const getValue = (...keys: string[]): string | undefined => {
