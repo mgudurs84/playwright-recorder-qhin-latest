@@ -224,6 +224,40 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
   });
 
   // Strategy 12: <strong> or <b> as inline label with following text node or sibling
+  // Also captures ASP.NET hidden/label elements: <strong id="hdnTransactionId">value</strong>
+  root.querySelectorAll("[id]").forEach((el) => {
+    const id = el.getAttribute("id") ?? "";
+    // ASP.NET convention: hdn = hidden field, lbl = label, spn = span display field
+    const prefixMatch = id.match(/^(hdn|lbl|spn|span|txt)([A-Z].*)$/);
+    if (prefixMatch) {
+      const fieldName = prefixMatch[2]
+        .replace(/([A-Z][a-z])/g, " $1")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .trim();
+      const value = el.getAttribute("value") ?? el.text.trim();
+      if (value) set(fieldName, value);
+    }
+  });
+
+  // Strategy 13: Bootstrap grid rows — .row with exactly two col-* children
+  // Handles: <div class="row"><div class="col-4">Label</div><div class="col-8">Value</div></div>
+  root.querySelectorAll(".row, [class*='row']").forEach((row) => {
+    // Direct col-* children only (not deeply nested)
+    const cols = row.childNodes.filter((n) => {
+      if (n.nodeType !== 1) return false;
+      const cls = (n as typeof root).getAttribute("class") ?? "";
+      return /\bcol\b|col-/.test(cls);
+    }) as typeof root[];
+
+    if (cols.length === 2) {
+      const label = cols[0].text.replace(/:$/, "").trim();
+      const value = cols[1].text.trim();
+      if (label && value && label.length <= 80 && !label.includes("\n")) {
+        set(label, value);
+      }
+    }
+  });
+
   root.querySelectorAll("strong, b").forEach((el) => {
     const labelText = el.text.replace(/:$/, "").trim();
     if (!labelText || labelText.length > 60) return;
