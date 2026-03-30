@@ -295,7 +295,8 @@ function parseLogLines(text: string): LogEntry[] {
     const line = raw.trim();
     if (!line) continue;
     // Format: MM/DD/YYYY HH:MM:SS.mmm\tLevel\tComponent\tMessage
-    const m = line.match(/^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\t(\w+)\t([^\t]+)\t(.+)$/);
+    // Component column may be empty (double-tab) — use [^\t]* (zero or more)
+    const m = line.match(/^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\t(\w+)\t([^\t]*)\t(.+)$/);
     if (m) {
       entries.push({ timestamp: m[1], level: m[2], message: m[4], component: m[3] });
     } else {
