@@ -767,17 +767,19 @@ async function fetchLogLines(
   const fullPageEndpointsPromise = discoverEndpointsFromFullPage(transactionId, cookieHeader);
   const fullPageEndpoints = await fullPageEndpointsPromise;
 
-  // Build the ordered list of candidates to try
+  // Build the ordered list of candidates to try.
+  // CANDIDATE_LOG_ENDPOINTS comes first because BindTransactionLogsHistory is the confirmed
+  // real endpoint — full-page discovery tends to surface list/dropdown endpoints that aren't log data.
   const toTry: LogEndpointCandidate[] = [
-    // 1. Playwright-discovered endpoints (highest confidence)
+    // 1. Confirmed primary + other hardcoded candidates (BindTransactionLogsHistory is first)
+    ...CANDIDATE_LOG_ENDPOINTS,
+    // 2. Playwright-discovered endpoints
     ...discoveredLogEndpoints.map((e) => ({ url: e.url, method: e.method as "GET" | "POST" })),
-    // 2. Extracted from the detail HTML's inline scripts
+    // 3. Extracted from the detail HTML's inline scripts
     ...(detailHtml ? extractLogEndpointsFromHtml(detailHtml).map((url) => ({ url, method: "POST" as const })) : []),
-    // 3. Extracted from the full transaction detail page (GET) — may reveal real endpoint
+    // 4. Extracted from the full transaction detail page (fallback discovery)
     ...fullPageEndpoints.map((url) => ({ url, method: "POST" as const })),
     ...fullPageEndpoints.map((url) => ({ url, method: "GET" as const })),
-    // 4. Hardcoded candidate names (BindTransactionLogsHistory is first)
-    ...CANDIDATE_LOG_ENDPOINTS,
   ];
 
   // Deduplicate while preserving order
