@@ -1,0 +1,74 @@
+{
+  "payloadEndpoints": [],
+  "logEndpoints": [
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/LoadTransactionLogsListPartialView",
+      "method": "POST",
+      "contentType": "text/plain;charset=UTF-8",
+      "trigger": "partial-view"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/GetTransactionTypesListDrp",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/GetTransactionStatusListDrp",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/BindTransactionLogs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    }
+  ],
+  "all": [
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/cdn-cgi/rum?",
+      "method": "POST",
+      "contentType": "application/json",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/LoadTransactionLogsListPartialView",
+      "method": "POST",
+      "contentType": "text/plain;charset=UTF-8",
+      "trigger": "partial-view"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/GetTransactionTypesListDrp",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/GetTransactionStatusListDrp",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/TransactionLogs/BindTransactionLogs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/AuditReport/LoadAuditListPartialView",
+      "method": "POST",
+      "contentType": "text/plain;charset=UTF-8",
+      "trigger": "partial-view"
+    },
+    {
+      "url": "https://integration.commonwellalliance.lkopera.com/AuditReport/BindAuditLogs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded; charset=UTF-8",
+      "trigger": "page-load"
+    }
+  ],
+  "discoveredAt": "2026-03-30T18:50:59.087Z"
+}
