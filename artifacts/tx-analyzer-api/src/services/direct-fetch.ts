@@ -102,18 +102,23 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     if (dd && dd.tagName === "DD") set(dt.text, dd.text);
   });
 
-  // Strategy 4: <label> + next sibling element (Bootstrap / generic forms)
+  // Strategy 4: <label> + next sibling element.
+  // Uses parent.childNodes iteration (more reliable than nextElementSibling in node-html-parser).
+  // Handles portal pattern: <div class="row gx-2"><label class="col-4">Field:</label><span class="col-8">Value</span></div>
   root.querySelectorAll("label").forEach((label) => {
-    const next = label.nextElementSibling;
-    if (next) {
-      const val = next.getAttribute("value") ?? next.text;
+    const parent = label.parentNode as typeof root | null;
+    if (!parent) return;
+
+    const elemChildren = parent.childNodes.filter(
+      (n) => n.nodeType === 1
+    ) as typeof root[];
+
+    const idx = elemChildren.findIndex((n) => n === (label as unknown));
+    if (idx !== -1 && idx + 1 < elemChildren.length) {
+      const sibling = elemChildren[idx + 1];
+      // strip icon/button text from sibling (e.g. copy-to-clipboard anchor)
+      const val = sibling.querySelector("span, div")?.text ?? sibling.text;
       set(label.text.replace(/:$/, ""), val);
-    }
-    // Also check parent's next sibling (two-column grid layout)
-    const parent = label.parentNode;
-    if (parent) {
-      const parentNext = (parent as typeof label).nextElementSibling;
-      if (parentNext) set(label.text.replace(/:$/, ""), parentNext.text);
     }
   });
 
@@ -149,16 +154,37 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     }
   });
 
-  // Strategy 9: Text-level regex — extract "Some Label: some value" patterns from plain text
+  // Strategy 9: Text-level extraction from plain text.
+  // Two sub-strategies:
+  //   9a: "Label: Value" on the SAME line (inline colon pattern)
+  //   9b: Label line ends with ":" and Value is on the NEXT non-empty line
+  //       (common in Bootstrap grid layouts where label and value are separate elements)
   const allText = root.text;
-  const linePatterns = allText.split(/[\n\r]+/);
-  for (const line of linePatterns) {
+  const lines = allText.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 9a: inline "Key: Value"
     const colonIdx = line.indexOf(":");
     if (colonIdx > 2 && colonIdx < 60) {
       const key = line.slice(0, colonIdx).trim();
       const val = line.slice(colonIdx + 1).trim();
       if (key && val && !key.includes("/") && !key.includes("http") && !/^\d+$/.test(key)) {
         set(key, val);
+      }
+    }
+
+    // 9b: label-only line ending with ":" — value is on the next non-empty line
+    if (line.endsWith(":") && line.length > 2 && line.length <= 80 && !line.includes("/") && !line.includes("http")) {
+      const key = line.slice(0, -1).trim();
+      // Look ahead up to 3 lines for the value
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const nextLine = lines[j];
+        if (nextLine && !nextLine.endsWith(":") && nextLine.length < 300) {
+          set(key, nextLine);
+          break;
+        }
       }
     }
   }
