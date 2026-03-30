@@ -16,10 +16,6 @@ export interface TransactionDetail {
   status?: string;
   requestingOrg?: string;
   requestingOid?: string;
-  respondingOrg?: string;
-  respondingOid?: string;
-  patientId?: string;
-  memberId?: string;
   errorCode?: string;
   errorMessage?: string;
   responseCode?: string;
@@ -361,7 +357,6 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
   };
 
   const reqOidMatch = allText.match(/requesting[^:]*oid[^:]*:\s*([0-9.]+)/i);
-  const resOidMatch = allText.match(/responding[^:]*oid[^:]*:\s*([0-9.]+)/i);
 
   return {
     transactionId,
@@ -370,10 +365,6 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     status: getValue("status", "result", "outcome"),
     requestingOrg: getValue("requesting org", "requester"),
     requestingOid: reqOidMatch?.[1] ?? oids[0],
-    respondingOrg: getValue("responding org", "responder"),
-    respondingOid: resOidMatch?.[1] ?? oids[1],
-    patientId: getValue("patient id", "patient"),
-    memberId: getValue("member id", "member"),
     errorCode: getValue("error code", "fault code"),
     errorMessage: getValue("error message", "fault message", "error detail"),
     responseCode: getValue("response code", "http status"),

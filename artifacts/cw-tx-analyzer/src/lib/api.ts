@@ -51,10 +51,6 @@ export interface TransactionDetail {
   status?: string;
   requestingOrg?: string;
   requestingOid?: string;
-  respondingOrg?: string;
-  respondingOid?: string;
-  patientId?: string;
-  memberId?: string;
   errorCode?: string;
   errorMessage?: string;
   responseCode?: string;
