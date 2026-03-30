@@ -710,10 +710,14 @@ async function analyzeLogText(
   return { transactionId, detail: syntheticDetail, organizations: orgs, ai };
 }
 
-function buildScreenshotPrompt(): string {
+function buildScreenshotPrompt(context?: string): string {
+  const contextBlock = context?.trim()
+    ? `\nADDITIONAL CONTEXT FROM THE SUPPORT ENGINEER:\n${context.trim()}\n\nUse this context to focus your analysis and tailor the L1/L2 actions accordingly.\n`
+    : "";
+
   return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
 CVS Health operates as the CommonWell broker/intermediary that fans out requests to member organizations.
-
+${contextBlock}
 The attached image is a screenshot from a support investigation. It may be from:
 - GCP Cloud Logging or GCP Error Reporting
 - The CommonWell portal (transaction detail page, log viewer, or error screen)
@@ -752,7 +756,8 @@ Respond ONLY with a valid JSON object — no markdown, no code blocks:
 
 async function analyzeScreenshotImage(
   imageBuffer: Buffer,
-  mimeType: string
+  mimeType: string,
+  context?: string
 ): Promise<AnalysisResult> {
   const imageBase64 = imageBuffer.toString("base64");
   const txId = "screenshot-" + Date.now();
@@ -766,6 +771,7 @@ async function analyzeScreenshotImage(
       "Analysis Type": "Screenshot / Image Upload",
       "Image MIME Type": mimeType,
       "Analyzed At": new Date().toISOString(),
+      ...(context?.trim() ? { "Engineer Context": context.trim() } : {}),
     },
     oids: [],
   };
@@ -773,7 +779,7 @@ async function analyzeScreenshotImage(
   let ai: AnalysisResult["ai"];
   try {
     const model = createVertexModel();
-    const prompt = buildScreenshotPrompt();
+    const prompt = buildScreenshotPrompt(context);
 
     const { text } = await generateText({
       model,
@@ -989,8 +995,9 @@ export function registerAnalyzeRoutes(app: Express): void {
         res.status(400).json({ error: "image file is required (multipart field: image)" });
         return;
       }
+      const context = typeof req.body?.context === "string" ? req.body.context : undefined;
       try {
-        const result = await analyzeScreenshotImage(file.buffer, file.mimetype);
+        const result = await analyzeScreenshotImage(file.buffer, file.mimetype, context);
         res.json(result);
       } catch (err) {
         const message = (err as Error).message;

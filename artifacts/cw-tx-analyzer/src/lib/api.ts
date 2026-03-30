@@ -149,9 +149,10 @@ export const api = {
       body: JSON.stringify({ transactionId }),
     }),
 
-  analyzeScreenshot: async (file: File): Promise<AnalysisResult> => {
+  analyzeScreenshot: async (file: File, context?: string): Promise<AnalysisResult> => {
     const formData = new FormData();
     formData.append("image", file);
+    if (context?.trim()) formData.append("context", context.trim());
     const url = `${BASE}/api/analyze/screenshot`;
     const res = await fetch(url, { method: "POST", body: formData });
     if (!res.ok) {

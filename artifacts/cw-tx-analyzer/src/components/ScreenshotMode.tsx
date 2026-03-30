@@ -9,6 +9,7 @@ export function ScreenshotMode() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState("");
+  const [context, setContext] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -84,7 +85,7 @@ export function ScreenshotMode() {
     setError("");
     setResult(null);
     try {
-      const res = await api.analyzeScreenshot(file);
+      const res = await api.analyzeScreenshot(file, context || undefined);
       setResult(res);
     } catch (err) {
       setError((err as Error).message);
@@ -160,6 +161,22 @@ export function ScreenshotMode() {
             )}
           </div>
         )}
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Additional context <span className="font-normal">(optional)</span>
+          </label>
+          <textarea
+            value={context}
+            onChange={(e) => setContext(e.target.value)}
+            placeholder="E.g. Patient search for MRN 12345 — investigating why org 2.16.840.1.x is returning 0 results. Transaction ID: abc-123."
+            rows={3}
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none"
+          />
+          <p className="text-xs text-muted-foreground">
+            Provide any background info (transaction ID, org name, error description) to help Gemini focus its analysis.
+          </p>
+        </div>
 
         <div className="flex items-center justify-between gap-4">
           <p className="text-xs text-muted-foreground">
