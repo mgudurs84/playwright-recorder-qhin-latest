@@ -418,8 +418,11 @@ async function fetchCsrfFormToken(cookieHeader: string): Promise<string | null> 
 }
 
 /**
- * POST using application/x-www-form-urlencoded (preferred by ASP.NET Core).
- * Falls back to multipart/form-data if the first attempt returns 400.
+ * POST to a portal partial-view endpoint.
+ * Mirrors exactly what the browser sends:
+ *   - CSRF token in request header (__RequestVerificationToken)
+ *   - Body as multipart/form-data (primary, matching browser behaviour)
+ *   - Falls back to application/x-www-form-urlencoded if multipart gets 400/415
  */
 async function postDetail(
   url: string,
@@ -436,52 +439,45 @@ async function postDetail(
     Referer: `${PORTAL_URL}/TransactionLogs/index`,
   };
 
+  // CSRF token goes in the request header (browser sends it this way)
   if (formToken) {
     commonHeaders["__RequestVerificationToken"] = formToken;
     console.log("[DirectFetch] Sending CSRF token in request header");
   }
 
-  // Attempt 1: application/x-www-form-urlencoded
-  let body: string | FormData = new URLSearchParams({ transactionId }).toString();
-  let contentType = "application/x-www-form-urlencoded";
-
-  // Include form token in body too (some ASP.NET endpoints check the body, not just headers)
-  if (formToken) {
-    body = new URLSearchParams({
-      transactionId,
-      __RequestVerificationToken: formToken,
-    }).toString();
-  }
+  // Attempt 1: multipart/form-data — matches what the browser sends
+  const formData = new FormData();
+  formData.append("transactionId", transactionId);
+  // Do NOT append CSRF to body; the browser sends it only as a header for this endpoint
 
   let response = await fetch(url, {
     method: "POST",
-    headers: { ...commonHeaders, "Content-Type": contentType },
-    body,
+    headers: {
+      ...commonHeaders,
+      // Content-Type intentionally omitted: fetch sets it with the correct multipart boundary
+    },
+    body: formData,
   });
 
-  console.log(`[DirectFetch] urlencoded POST → HTTP ${response.status}`);
+  console.log(`[DirectFetch] multipart POST → HTTP ${response.status}`);
 
-  // Attempt 2: fall back to multipart if urlencoded got 400/415
+  // Attempt 2: fall back to application/x-www-form-urlencoded if multipart was rejected
   if (response.status === 400 || response.status === 415) {
-    console.log("[DirectFetch] Retrying with multipart/form-data...");
-    const formData = new FormData();
-    formData.append("transactionId", transactionId);
-    if (formToken) formData.append("__RequestVerificationToken", formToken);
+    console.log("[DirectFetch] Retrying with application/x-www-form-urlencoded...");
+    const params = new URLSearchParams({ transactionId });
+    if (formToken) params.set("__RequestVerificationToken", formToken);
 
     response = await fetch(url, {
       method: "POST",
-      headers: {
-        ...commonHeaders,
-        "Content-Type": undefined as unknown as string,  // let fetch set multipart boundary
-      },
-      body: formData,
+      headers: { ...commonHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
     });
-    console.log(`[DirectFetch] multipart POST → HTTP ${response.status}`);
+    console.log(`[DirectFetch] urlencoded POST → HTTP ${response.status}`);
   }
 
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    console.error("[DirectFetch] Portal error body (first 500 chars):", body.slice(0, 500));
+    const errBody = await response.text().catch(() => "");
+    console.error("[DirectFetch] Portal error body (first 500 chars):", errBody.slice(0, 500));
     throw new Error(`Portal returned HTTP ${response.status}: ${response.statusText}`);
   }
 
