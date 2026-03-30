@@ -81,10 +81,6 @@ function extractFieldsFromHtml(html: string): Record<string, string> {
 
   const dlRegex = /<dl[^>]*>([\s\S]*?)<\/dl>/gi;
   for (const [, dlContent] of html.matchAll(dlRegex)) {
-    const dtRegex = /<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi;
-    for (const [, label, value] of dtRegex[Symbol.match] ? html.matchAll(new RegExp(dtRegex.source, "gi")) : []) {
-      void label; void value; // skip - handled below
-    }
     const pairRegex = /<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi;
     for (const [, label, value] of dlContent.matchAll(pairRegex)) {
       const k = label.replace(/<[^>]+>/g, "").trim().replace(/:$/, "");
