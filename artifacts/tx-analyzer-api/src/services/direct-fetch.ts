@@ -548,7 +548,33 @@ async function fetchRawPayload(
  * Hardcoded candidate endpoints for broker log lines.
  * Based on the known detail endpoint naming pattern: LoadTransactionLogsDetailPartialView
  */
-const CANDIDATE_LOG_ENDPOINTS: Array<{ url: string; method: "GET" | "POST" }> = [
+interface LogEndpointCandidate {
+  url: string;
+  method: "GET" | "POST";
+  /** If present, overrides the default POST body builder for this endpoint */
+  buildBody?: (transactionId: string, formToken: string | null) => URLSearchParams;
+}
+
+/** Build the Kendo Grid datasource body for BindTransactionLogsHistory */
+function buildKendoLogBody(transactionId: string, formToken: string | null): URLSearchParams {
+  const p = new URLSearchParams();
+  p.set("sort", "TimeStampDisplay-asc");
+  p.set("page", "1");
+  p.set("pageSize", "500"); // large page to capture all entries at once
+  p.set("group", "");
+  p.set("filter", "");
+  p.set("TransactionId", transactionId);
+  if (formToken) p.set("__RequestVerificationToken", formToken);
+  return p;
+}
+
+const CANDIDATE_LOG_ENDPOINTS: LogEndpointCandidate[] = [
+  // *** Primary — confirmed real endpoint via browser DevTools ***
+  {
+    url: `${PORTAL_URL}/TransactionLogs/BindTransactionLogsHistory`,
+    method: "POST",
+    buildBody: buildKendoLogBody,
+  },
   // Variants of "Detail" + log suffix (same base as LoadTransactionLogsDetailPartialView)
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailLogLinesPartialView`, method: "POST" },
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailAuditPartialView`, method: "POST" },
@@ -646,6 +672,38 @@ async function discoverEndpointsFromFullPage(
 }
 
 /**
+ * If the text is a Kendo Grid JSON response ({"Data":[...],"Total":N}),
+ * convert it to the tab-separated log format that parseLogLines() already handles.
+ * Returns the original text unchanged if it is not Kendo JSON.
+ */
+function normalizeKendoLogResponse(text: string): string {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("{")) return text;
+  try {
+    const json = JSON.parse(trimmed) as unknown;
+    if (
+      typeof json !== "object" ||
+      json === null ||
+      !("Data" in json) ||
+      !Array.isArray((json as { Data: unknown }).Data)
+    ) {
+      return text;
+    }
+    const rows = (json as { Data: Array<Record<string, unknown>> }).Data;
+    const lines = rows.map((row) => {
+      const ts = String(row["TimeStampDisplay"] ?? row["Timestamp"] ?? "");
+      const level = String(row["Level"] ?? row["LogLevel"] ?? "Information");
+      const component = String(row["Component"] ?? row["Source"] ?? "");
+      const message = String(row["Message"] ?? row["Description"] ?? "");
+      return `${ts}\t${level}\t${component}\t${message}`;
+    });
+    return lines.join("\n");
+  } catch {
+    return text;
+  }
+}
+
+/**
  * Returns true if the response text looks like genuine log data
  * (contains timestamp-like patterns and log-level keywords — not a login redirect).
  */
@@ -656,13 +714,28 @@ function looksLikeLogData(text: string): boolean {
   // Reject portal HTML/CSS — these contain HTML tags
   if (/<html|<head|<body|<div|<script|<!DOCTYPE/i.test(text.slice(0, 500))) return false;
 
-  // Require the EXACT CommonWell log format:
+  // Accept Kendo Grid JSON response: {"Data":[...],"Total":N}
+  if (text.trimStart().startsWith("{")) {
+    try {
+      const json = JSON.parse(text) as unknown;
+      if (
+        typeof json === "object" &&
+        json !== null &&
+        "Data" in json &&
+        Array.isArray((json as { Data: unknown }).Data) &&
+        (json as { Data: unknown[] }).Data.length > 0
+      ) {
+        return true;
+      }
+    } catch { /* not valid JSON */ }
+  }
+
+  // Require the EXACT CommonWell tab-separated log format:
   //   MM/DD/YYYY HH:MM:SS.mmm[TAB]Level[TAB]Component[TAB]Message
-  // The TAB between timestamp and log level NEVER appears in portal HTML.
   const hasCwLogFormat = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\t(Information|Warning|Error|Debug|Critical)/i.test(text);
   if (hasCwLogFormat) return true;
 
-  // OR a JSON array containing expected log field names (Kendo DataSource response)
+  // OR a JSON array with expected log field names
   const isJsonLogArray =
     text.trimStart().startsWith("[") &&
     /"(timestamp|level|message|component|logLevel)"\s*:/i.test(text);
@@ -694,8 +767,8 @@ async function fetchLogLines(
   const fullPageEndpointsPromise = discoverEndpointsFromFullPage(transactionId, cookieHeader);
   const fullPageEndpoints = await fullPageEndpointsPromise;
 
-  // Build the ordered list of URLs to try
-  const toTry: Array<{ url: string; method: "GET" | "POST" }> = [
+  // Build the ordered list of candidates to try
+  const toTry: LogEndpointCandidate[] = [
     // 1. Playwright-discovered endpoints (highest confidence)
     ...discoveredLogEndpoints.map((e) => ({ url: e.url, method: e.method as "GET" | "POST" })),
     // 2. Extracted from the detail HTML's inline scripts
@@ -703,7 +776,7 @@ async function fetchLogLines(
     // 3. Extracted from the full transaction detail page (GET) — may reveal real endpoint
     ...fullPageEndpoints.map((url) => ({ url, method: "POST" as const })),
     ...fullPageEndpoints.map((url) => ({ url, method: "GET" as const })),
-    // 4. Hardcoded candidate names
+    // 4. Hardcoded candidate names (BindTransactionLogsHistory is first)
     ...CANDIDATE_LOG_ENDPOINTS,
   ];
 
@@ -720,8 +793,14 @@ async function fetchLogLines(
     try {
       let res: Response;
       if (ep.method === "POST") {
-        const body = new URLSearchParams({ transactionId });
-        if (formToken) body.set("__RequestVerificationToken", formToken);
+        // Use endpoint-specific body builder if provided (e.g. Kendo pagination params)
+        const body = ep.buildBody
+          ? ep.buildBody(transactionId, formToken)
+          : (() => {
+              const p = new URLSearchParams({ transactionId });
+              if (formToken) p.set("__RequestVerificationToken", formToken);
+              return p;
+            })();
         res = await fetch(ep.url, {
           method: "POST",
           headers: { ...authHeaders, "Content-Type": "application/x-www-form-urlencoded" },
@@ -736,12 +815,15 @@ async function fetchLogLines(
 
       if (!res.ok) continue;
 
-      const text = await res.text();
+      const rawText = await res.text();
+      // Normalize Kendo Grid JSON response → tab-separated text before validation
+      const text = normalizeKendoLogResponse(rawText);
       if (looksLikeLogData(text)) {
-        console.log(`[DirectFetch] Got log lines from ${ep.url} (${text.length} chars)`);
+        const entryCount = text.split("\n").filter(Boolean).length;
+        console.log(`[DirectFetch] Got log lines from ${ep.url} (${entryCount} entries)`);
         return { logs: text, endpointUsed: ep.url };
       }
-      console.log(`[DirectFetch] Response from ${ep.url} doesn't look like log data (${text.length} chars)`);
+      console.log(`[DirectFetch] Response from ${ep.url} doesn't look like log data (${rawText.length} chars)`);
     } catch (err) {
       console.warn(`[DirectFetch] Log probe failed for ${ep.url}:`, (err as Error).message);
     }
