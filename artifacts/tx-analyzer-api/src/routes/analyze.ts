@@ -1,10 +1,23 @@
 import { type Express, type Request, type Response } from "express";
 import { generateText } from "ai";
+import multer from "multer";
 import { fetchTransactionDetail, type TransactionDetail } from "../services/direct-fetch.js";
 import { fetchTransactionDetailPlaywright } from "../services/playwright-fetch.js";
 import { resolveOidsWithLookup } from "../services/oid-resolver.js";
 import { takeScreenshot } from "../services/auth.js";
 import { createVertexModel } from "../lib/vertex.js";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are supported"));
+    }
+  },
+});
 
 export interface AnalysisResult {
   transactionId: string;
@@ -697,6 +710,174 @@ async function analyzeLogText(
   return { transactionId, detail: syntheticDetail, organizations: orgs, ai };
 }
 
+function buildScreenshotPrompt(): string {
+  return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
+CVS Health operates as the CommonWell broker/intermediary that fans out requests to member organizations.
+
+The attached image is a screenshot from a support investigation. It may be from:
+- GCP Cloud Logging or GCP Error Reporting
+- The CommonWell portal (transaction detail page, log viewer, or error screen)
+- A FHIR server response or error UI
+- Any other system relevant to a CW transaction investigation
+
+Analyze everything visible in the screenshot: error messages, log lines, transaction IDs, OIDs, HTTP status codes, timestamps, org names, counts, and any other relevant details.
+
+Extract any OIDs you see (format: digits separated by dots, starting with 2.16 or 1.3.6) and list them in the organizations array.
+
+CRITICAL FIELD LENGTH RULES — the stats bar tiles show these 4 fields directly:
+- "transactionCategory": max 4 words
+- "fanoutOrgCount": max 8 words, e.g. "14 orgs (patient search) → 104 orgs (doc fanout)", "not visible", "1 (direct)"
+- "documentsFound": max 8 words, e.g. "8 retrieved (29 fanout)", "0", "not visible"
+- "durationMs": max 10 chars, e.g. "4163ms", "unknown"
+Never put sentences or explanations in these four fields. Explanations go in summary, l1Actions, l2Actions.
+
+Respond ONLY with a valid JSON object — no markdown, no code blocks:
+{
+  "summary": "3-4 sentence description of what is visible in the screenshot: what system, what error or event, any transaction IDs, org names, counts, or timestamps visible.",
+  "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other|Unknown",
+  "fanoutOrgCount": "number of orgs visible in screenshot, or 'not visible'",
+  "documentsFound": "document count visible, or 'not visible'",
+  "durationMs": "duration if visible, e.g. '3901ms', or 'unknown'",
+  "dataFlow": "Data flow chain inferred from screenshot, e.g. 'Requester → CVS Health (broker) → target orgs', or 'not determinable from screenshot'",
+  "rootCause": "Root cause of any errors visible, or 'No errors visible'",
+  "organizations": [
+    {"oid": "2.16.840.1.x", "name": "Org Name or OID if name not visible", "role": "requester|responder|intermediary|broker|unknown"}
+  ],
+  "l1Actions": ["Specific action L1 should take based on what is visible in the screenshot"],
+  "l2Actions": ["Engineering escalation action if applicable"],
+  "severity": "low|medium|high|critical",
+  "resolution": "Recommended resolution based on screenshot content"
+}`;
+}
+
+async function analyzeScreenshotImage(
+  imageBuffer: Buffer,
+  mimeType: string
+): Promise<AnalysisResult> {
+  const imageBase64 = imageBuffer.toString("base64");
+  const txId = "screenshot-" + Date.now();
+
+  const syntheticDetail: TransactionDetail = {
+    transactionId: txId,
+    timestamp: new Date().toISOString(),
+    transactionType: "Screenshot Analysis",
+    status: "Analyzed",
+    rawFields: {
+      "Analysis Type": "Screenshot / Image Upload",
+      "Image MIME Type": mimeType,
+      "Analyzed At": new Date().toISOString(),
+    },
+    oids: [],
+  };
+
+  let ai: AnalysisResult["ai"];
+  try {
+    const model = createVertexModel();
+    const prompt = buildScreenshotPrompt();
+
+    const { text } = await generateText({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image" as const,
+              image: imageBase64,
+              mediaType: mimeType as `image/${string}`,
+            },
+            {
+              type: "text" as const,
+              text: prompt,
+            },
+          ],
+        },
+      ],
+    });
+
+    const cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+    const parsed = JSON.parse(cleaned) as AnalysisResult["ai"];
+
+    const trimStat = (val: string | undefined, fallback: string, maxChars = 50): string => {
+      const s = (val ?? fallback).trim();
+      if (s.length <= maxChars) return s;
+      const cut = s.search(/[.,(]/);
+      return cut > 0 ? s.slice(0, cut).trim() : s.slice(0, maxChars).trim();
+    };
+
+    // Extract OIDs from two sources and merge:
+    // 1. parsed.organizations[].oid (structured output)
+    // 2. regex scan of raw Gemini response text (catches OIDs mentioned in summary/rootCause/dataFlow)
+    const oidRegex = /\d+(?:\.\d+){5,}/g;
+    const textOids = [...new Set(
+      (text.match(oidRegex) ?? []).filter((o) => o.startsWith("2.16.840") || o.startsWith("1.3.6"))
+    )];
+    const structuredOids = Array.isArray(parsed.organizations)
+      ? parsed.organizations.map((o: { oid: string }) => o.oid).filter(Boolean)
+      : [];
+    const rawOids = [...new Set([...structuredOids, ...textOids])];
+    const orgs = await resolveOidsWithLookup(rawOids);
+    const resolvedNames = new Map(orgs.map((o) => [o.oid, o.name]));
+
+    // Update syntheticDetail with discovered OIDs
+    syntheticDetail.oids = rawOids;
+
+    const structuredOrgMap = new Map(
+      Array.isArray(parsed.organizations)
+        ? parsed.organizations.map((o: { oid: string; name: string; role: string }) => [o.oid, o])
+        : []
+    );
+    // Merge: structured orgs with resolved names + any extra OIDs found only by regex
+    const aiOrgs = [
+      ...Array.from(structuredOrgMap.values()).map((o: { oid: string; name: string; role: string }) => ({
+        ...o,
+        name: resolvedNames.get(o.oid) ?? o.name,
+      })),
+      ...orgs
+        .filter((o) => !structuredOrgMap.has(o.oid))
+        .map((o) => ({ oid: o.oid, name: o.name, role: "unknown" as const })),
+    ];
+
+    ai = {
+      summary: parsed.summary ?? "No summary available",
+      dataFlow: parsed.dataFlow ?? "",
+      transactionCategory: trimStat(parsed.transactionCategory, "Unknown", 30),
+      fanoutOrgCount: trimStat(parsed.fanoutOrgCount, "not visible"),
+      documentsFound: trimStat(parsed.documentsFound, "not visible"),
+      durationMs: trimStat(parsed.durationMs, "unknown", 20),
+      rootCause: parsed.rootCause ?? "Unable to determine",
+      organizations: aiOrgs,
+      l1Actions: Array.isArray(parsed.l1Actions) ? parsed.l1Actions : [],
+      l2Actions: Array.isArray(parsed.l2Actions) ? parsed.l2Actions : [],
+      severity: (
+        ["low", "medium", "high", "critical"].includes(parsed.severity)
+          ? parsed.severity
+          : "medium"
+      ) as AnalysisResult["ai"]["severity"],
+      resolution: parsed.resolution ?? "No action required",
+    };
+
+    return { transactionId: txId, detail: syntheticDetail, organizations: orgs, ai };
+  } catch (aiErr) {
+    console.warn("[ScreenshotAnalyze] AI failed:", (aiErr as Error).message);
+    ai = {
+      summary: "Screenshot analysis failed. The image could not be processed by the AI model.",
+      dataFlow: "",
+      transactionCategory: "Unknown",
+      fanoutOrgCount: "unknown",
+      documentsFound: "unknown",
+      durationMs: "unknown",
+      rootCause: (aiErr as Error).message ?? "AI unavailable",
+      organizations: [],
+      l1Actions: ["Review the screenshot manually"],
+      l2Actions: ["Check AI model configuration"],
+      severity: "medium",
+      resolution: "Manual investigation required",
+    };
+    return { transactionId: txId, detail: syntheticDetail, organizations: [], ai };
+  }
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   // Main analysis endpoint
   app.post("/api/analyze", async (req: Request, res: Response) => {
@@ -782,4 +963,40 @@ export function registerAnalyzeRoutes(app: Express): void {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // Screenshot analysis endpoint — accepts a multipart image upload and runs Gemini Vision
+  app.post(
+    "/api/analyze/screenshot",
+    (req: Request, res: Response, next) => {
+      upload.single("image")(req, res, (err) => {
+        if (err) {
+          const multerErr = err as { code?: string; message?: string };
+          if (multerErr.code === "LIMIT_FILE_SIZE") {
+            res.status(413).json({ error: "Image file exceeds the 20 MB size limit" });
+          } else if (multerErr.code === "LIMIT_UNEXPECTED_FILE") {
+            res.status(400).json({ error: "Unexpected file field — use multipart field name 'image'" });
+          } else {
+            res.status(400).json({ error: multerErr.message ?? "File upload error" });
+          }
+          return;
+        }
+        next();
+      });
+    },
+    async (req: Request, res: Response) => {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: "image file is required (multipart field: image)" });
+        return;
+      }
+      try {
+        const result = await analyzeScreenshotImage(file.buffer, file.mimetype);
+        res.json(result);
+      } catch (err) {
+        const message = (err as Error).message;
+        console.error("[ScreenshotAnalyze] Error:", message);
+        res.status(500).json({ error: message });
+      }
+    }
+  );
 }

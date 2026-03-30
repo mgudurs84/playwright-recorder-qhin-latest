@@ -4,8 +4,9 @@ import { LoginPanel } from "@/components/LoginPanel";
 import { SingleMode } from "@/components/SingleMode";
 import { BatchMode } from "@/components/BatchMode";
 import { LogTextMode } from "@/components/LogTextMode";
+import { ScreenshotMode } from "@/components/ScreenshotMode";
 
-type Mode = "single" | "batch" | "logtext";
+type Mode = "single" | "batch" | "logtext" | "screenshot";
 
 export default function Analyzer() {
   const [status, setStatus] = useState<SessionStatus | null>(null);
@@ -59,10 +60,11 @@ export default function Analyzer() {
             <TabButton label="Single Transaction" active={mode === "single"} onClick={() => setMode("single")} />
             <TabButton label="Batch CSV Upload" active={mode === "batch"} onClick={() => setMode("batch")} />
             <TabButton label="Paste Log Text" active={mode === "logtext"} onClick={() => setMode("logtext")} />
+            <TabButton label="Screenshot" active={mode === "screenshot"} onClick={() => setMode("screenshot")} />
           </div>
 
           <div className="p-5">
-            {mode !== "logtext" && !status?.valid && (
+            {mode !== "logtext" && mode !== "screenshot" && !status?.valid && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 rounded-lg px-4 py-3 mb-4">
                 <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M12 2a10 10 0 110 20A10 10 0 0112 2z" />
@@ -73,6 +75,7 @@ export default function Analyzer() {
             {mode === "single" && <SingleMode screenshotsEnabled={screenshotsEnabled} />}
             {mode === "batch" && <BatchMode screenshotsEnabled={screenshotsEnabled} />}
             {mode === "logtext" && <LogTextMode />}
+            {mode === "screenshot" && <ScreenshotMode />}
           </div>
         </div>
 

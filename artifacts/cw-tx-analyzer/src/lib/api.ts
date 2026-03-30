@@ -148,4 +148,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ transactionId }),
     }),
+
+  analyzeScreenshot: async (file: File): Promise<AnalysisResult> => {
+    const formData = new FormData();
+    formData.append("image", file);
+    const url = `${BASE}/api/analyze/screenshot`;
+    const res = await fetch(url, { method: "POST", body: formData });
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const body = await res.json() as { error?: string };
+        if (body.error) errMsg = body.error;
+      } catch {}
+      throw new Error(errMsg);
+    }
+    return res.json() as Promise<AnalysisResult>;
+  },
 };
