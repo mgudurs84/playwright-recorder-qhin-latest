@@ -1,4 +1,4 @@
-import { chromium, type Browser } from "playwright";
+import { chromium, type Browser, type BrowserContextOptions } from "playwright";
 import { loadSession } from "./auth.js";
 import type { TransactionDetail } from "./direct-fetch.js";
 
@@ -35,9 +35,8 @@ function extractOids(text: string): string[] {
  *
  * Flow:
  *   navigate to portal index  →  get CSRF token  →  fetch partial-view HTML
- *   via page.evaluate (same origin, so cookies & tokens work)  →  inject HTML
- *   into live DOM  →  re-run inline <script> tags  →  wait for grid render
- *   →  scrape rows + detail fields
+ *   via page.evaluate (same origin, cookies work)  →  inject HTML into live DOM
+ *   →  re-run inline <script> tags  →  wait for grid render  →  scrape rows + fields
  */
 export async function fetchTransactionDetailPlaywright(
   transactionId: string
@@ -48,13 +47,15 @@ export async function fetchTransactionDetailPlaywright(
   }
 
   const browser = await ensurePwBrowser();
-  const context = await browser.newContext({
-    storageState: session.storageState as Parameters<Browser["newContext"]>[0]["storageState"],
+
+  const contextOptions: BrowserContextOptions = {
+    storageState: session.storageState as BrowserContextOptions["storageState"],
     viewport: { width: 1280, height: 900 },
     userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
-
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  };
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
 
@@ -69,17 +70,17 @@ export async function fetchTransactionDetailPlaywright(
       throw new Error("Session expired — portal redirected to login");
     }
 
-    const formToken: string | null = await page.evaluate(() => {
+    const formToken: string | null = await page.evaluate((): string | null => {
       const el = document.querySelector<HTMLInputElement>(
         'input[name="__RequestVerificationToken"]'
       );
       return el?.value ?? null;
     });
 
-    console.log(`[PlaywrightFetch] CSRF token obtained: ${formToken ? "yes" : "no"}`);
+    console.log(`[PlaywrightFetch] CSRF token: ${formToken ? "obtained" : "not found"}`);
 
     const rawHtml: string = await page.evaluate(
-      async ({ txId, url, token }) => {
+      async ({ txId, url, token }: { txId: string; url: string; token: string | null }): Promise<string> => {
         const fd = new FormData();
         fd.append("TransactionId", txId);
         if (token) fd.append("__RequestVerificationToken", token);
@@ -95,16 +96,18 @@ export async function fetchTransactionDetailPlaywright(
 
     console.log(`[PlaywrightFetch] Partial view HTML: ${rawHtml.length} chars`);
 
-    await page.evaluate((html: string) => {
-      let container = document.getElementById("pw-detail-root");
-      if (container) container.remove();
-      container = document.createElement("div");
+    await page.evaluate((html: string): void => {
+      const existing = document.getElementById("pw-detail-root");
+      if (existing) existing.remove();
+
+      const container = document.createElement("div");
       container.id = "pw-detail-root";
-      container.style.cssText = "position:absolute;left:-9999px;visibility:hidden;width:1200px";
+      container.style.cssText =
+        "position:absolute;left:-9999px;visibility:hidden;width:1200px";
       container.innerHTML = html;
       document.body.appendChild(container);
 
-      container.querySelectorAll<HTMLScriptElement>("script").forEach((orig) => {
+      container.querySelectorAll<HTMLScriptElement>("script").forEach((orig: HTMLScriptElement) => {
         try {
           const s = document.createElement("script");
           if (orig.src) {
@@ -120,7 +123,6 @@ export async function fetchTransactionDetailPlaywright(
       });
     }, rawHtml);
 
-    // Wait for any Kendo grid to render (up to 10 s)
     const gridRendered = await page
       .waitForSelector("#pw-detail-root .k-grid tbody tr", { timeout: 10000 })
       .then(() => true)
@@ -129,33 +131,43 @@ export async function fetchTransactionDetailPlaywright(
     console.log(`[PlaywrightFetch] Kendo grid rendered: ${gridRendered}`);
 
     const logRows: string[][] = await page
-      .$$eval("#pw-detail-root .k-grid tbody tr", (rows) =>
-        rows.map((row) =>
-          Array.from(row.querySelectorAll("td")).map(
-            (cell) => cell.textContent?.trim() ?? ""
+      .$$eval(
+        "#pw-detail-root .k-grid tbody tr",
+        (rows: Element[]): string[][] =>
+          rows.map((row) =>
+            Array.from(row.querySelectorAll("td")).map(
+              (cell) => (cell as HTMLElement).innerText?.trim() ?? cell.textContent?.trim() ?? ""
+            )
           )
-        )
       )
-      .catch(() => []);
+      .catch((): string[][] => []);
 
     console.log(`[PlaywrightFetch] Log rows extracted: ${logRows.length}`);
 
-    const detailFields: Record<string, string> = await page.evaluate(() => {
+    const colHeaders: string[] = await page
+      .$$eval(
+        "#pw-detail-root .k-grid thead th",
+        (ths: Element[]): string[] =>
+          ths.map((th) => (th as HTMLElement).innerText?.trim() ?? th.textContent?.trim() ?? "")
+      )
+      .catch((): string[] => []);
+
+    const detailFields: Record<string, string> = await page.evaluate((): Record<string, string> => {
       const fields: Record<string, string> = {};
       const root = document.getElementById("pw-detail-root");
       if (!root) return fields;
 
-      root.querySelectorAll("dl").forEach((dl) => {
+      root.querySelectorAll("dl").forEach((dl: HTMLElement) => {
         const dts = dl.querySelectorAll("dt");
         const dds = dl.querySelectorAll("dd");
-        dts.forEach((dt, i) => {
+        dts.forEach((dt: Element, i: number) => {
           const key = dt.textContent?.trim().replace(/:$/, "") ?? "";
           const val = dds[i]?.textContent?.trim() ?? "";
           if (key && val) fields[key] = val;
         });
       });
 
-      root.querySelectorAll("tr").forEach((tr) => {
+      root.querySelectorAll("tr").forEach((tr: Element) => {
         const cells = tr.querySelectorAll("td, th");
         if (cells.length === 2) {
           const key = cells[0].textContent?.trim().replace(/:$/, "") ?? "";
@@ -166,24 +178,17 @@ export async function fetchTransactionDetailPlaywright(
         }
       });
 
-      root.querySelectorAll(".form-group, .field-row").forEach((row) => {
-        const label = row.querySelector("label")?.textContent?.trim().replace(/:$/, "") ?? "";
-        const val = row.querySelector("span, p, .field-value")?.textContent?.trim() ?? "";
+      root.querySelectorAll(".form-group, .field-row").forEach((row: Element) => {
+        const label =
+          row.querySelector("label")?.textContent?.trim().replace(/:$/, "") ?? "";
+        const val =
+          row.querySelector("span, p, .field-value")?.textContent?.trim() ?? "";
         if (label && val) fields[label] = val;
       });
 
       return fields;
     });
 
-    // Determine grid column headers so we can label each cell
-    const colHeaders: string[] = await page
-      .$$eval(
-        "#pw-detail-root .k-grid thead th",
-        (ths) => ths.map((th) => th.textContent?.trim() ?? "")
-      )
-      .catch(() => []);
-
-    // Build tab-separated log text
     const rawLogs =
       logRows.length > 0
         ? logRows
@@ -200,15 +205,19 @@ export async function fetchTransactionDetailPlaywright(
       rawHtml;
     const oids = extractOids(allText);
 
+    console.log(
+      `[PlaywrightFetch] Done — fields: ${Object.keys(detailFields).length}, ` +
+        `log rows: ${logRows.length}, OIDs: ${oids.length}, ` +
+        `col headers: ${colHeaders.join("|") || "none"}`
+    );
+
     const detail: TransactionDetail = {
       transactionId,
       rawFields: detailFields,
       oids,
       rawHtml,
       rawLogs,
-      logEndpointUsed: rawLogs
-        ? `Playwright → ${DETAIL_URL}`
-        : undefined,
+      logEndpointUsed: rawLogs ? `Playwright → ${DETAIL_URL}` : undefined,
       endpointUsed: `Playwright → ${DETAIL_URL}`,
       timestamp:
         detailFields["Start Time"] ??
@@ -233,12 +242,6 @@ export async function fetchTransactionDetailPlaywright(
         detailFields["Error Message"] ?? detailFields["Error"],
       duration: detailFields["Duration"] ?? detailFields["Elapsed"],
     };
-
-    console.log(
-      `[PlaywrightFetch] Done — fields: ${Object.keys(detailFields).length}, ` +
-      `log rows: ${logRows.length}, OIDs: ${oids.length}, ` +
-      `col headers: ${colHeaders.join("|") || "none"}`
-    );
 
     return detail;
   } finally {
