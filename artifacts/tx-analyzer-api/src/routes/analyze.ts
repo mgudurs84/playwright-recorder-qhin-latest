@@ -157,32 +157,32 @@ ${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs resolved
 INSTRUCTIONS — answer every field below using the BROKER LOG LINES as the primary source when available:
 1. TRANSACTION CATEGORY: Classify as one of: Document Query, Document Retrieve, Patient Search, Patient Match, Document Submission, or Other.
 2. BROKERING CHAIN: Identify the full chain from log lines. Show: Initiating Org → CVS Health (broker) → each target org with its result (success/error/no match). If log lines are unavailable, say so explicitly.
-3. FANOUT ORG COUNT: If broker log lines are available above, count the unique orgs and state the number. If NOT available, use "unknown — check portal log tab". Do NOT write a sentence — this field is a SHORT label for a stats tile (max 8 words).
-4. DOCUMENTS FOUND: If broker log lines are available, state the count. If NOT available, use "unknown — check portal log tab" or "HTTP 200 — count in log tab". Do NOT write a sentence — this is a SHORT label for a stats tile (max 8 words).
+3. FANOUT ORG COUNT: If broker log lines are available above, count the unique orgs and state the number. If NOT available, use "paste broker logs". Do NOT write a sentence — this field is a SHORT label for a stats tile (max 8 words).
+4. DOCUMENTS FOUND: If broker log lines are available, state the count. If NOT available, use "paste broker logs". Do NOT write a sentence — this is a SHORT label for a stats tile (max 8 words).
 5. DURATION: Calculate from Start Time and End Time. Long durations (>1s) indicate broker fanout.
 6. ORGANIZATIONS: List every org with name (from OID resolution or log lines), OID, role, and outcome. Put per-org detail in the summary and l1Actions.
-7. L1/L2 ACTIONS: Be highly specific. If log lines were not available, the first L1 action MUST be "Open the portal transaction detail → Log Lines tab to see per-org fanout results and document counts." Then list any errors visible from the summary fields.
+7. L1/L2 ACTIONS: Be highly specific. If broker log lines were not available, the first L1 action MUST be "Use the 'Paste Log Text' tab to paste the broker logs for this transaction — the portal audit log does not contain per-org fanout detail." Then list any errors visible from the summary fields.
 
 CRITICAL FIELD LENGTH RULES — the stats bar tiles show these 4 fields directly:
 - "transactionCategory": max 4 words
-- "fanoutOrgCount": max 8 words, e.g. "104 organizations", "unknown — check log tab", "1 (direct)"
-- "documentsFound": max 8 words, e.g. "8 documents retrieved", "0", "unknown — check log tab"
+- "fanoutOrgCount": max 8 words, e.g. "104 organizations", "paste broker logs", "1 (direct)"
+- "documentsFound": max 8 words, e.g. "8 documents retrieved", "0", "paste broker logs"
 - "durationMs": max 10 chars, e.g. "4163ms", "unknown"
 Never put sentences or explanations in these four fields. Explanations go in summary, l1Actions, l2Actions.
 
 Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known from log lines), how many documents found (if applicable), and the outcome. If log lines were unavailable, say so here and direct support to check the portal Log Lines tab.",
+  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known from log lines), how many documents found (if applicable), and the outcome. If broker log lines were unavailable, note that the portal audit log only contains gateway-level entries and that broker fanout details require pasting the broker logs via the Paste Log Text tab.",
   "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
-  "fanoutOrgCount": "SHORT label only — e.g. '104 organizations' or '1 (direct)' or 'unknown — check log tab'",
-  "documentsFound": "SHORT label only — e.g. '8 retrieved (29 fanout)' or '0' or 'unknown — check log tab'",
+  "fanoutOrgCount": "SHORT label only — e.g. '104 organizations' or '1 (direct)' or 'paste broker logs'",
+  "documentsFound": "SHORT label only — e.g. '8 retrieved (29 fanout)' or '0' or 'paste broker logs'",
   "durationMs": "e.g. '3901ms' or 'unknown'",
   "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 member orgs (fanout)'",
   "rootCause": "Root cause of any errors, or 'No errors detected'",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
   ],
-  "l1Actions": ["Specific action L1 should take — first action must be 'Check portal Log Lines tab' when log lines are unavailable"],
+  "l1Actions": ["Specific action L1 should take — first action must be 'Use the Paste Log Text tab to paste broker logs' when broker log lines are unavailable"],
   "l2Actions": ["Engineering escalation action"],
   "severity": "low|medium|high|critical",
   "resolution": "Recommended resolution or 'No action required'"
@@ -230,8 +230,8 @@ export async function analyzeTransaction(
       summary: parsed.summary ?? "No summary available",
       dataFlow: parsed.dataFlow ?? "",
       transactionCategory: trimStat(parsed.transactionCategory, "Unknown", 30),
-      fanoutOrgCount: trimStat(parsed.fanoutOrgCount, "unknown — check log tab"),
-      documentsFound: trimStat(parsed.documentsFound, "unknown — check log tab"),
+      fanoutOrgCount: trimStat(parsed.fanoutOrgCount, "paste broker logs"),
+      documentsFound: trimStat(parsed.documentsFound, "paste broker logs"),
       durationMs: trimStat(parsed.durationMs, "unknown", 20),
       rootCause: parsed.rootCause ?? "Unable to determine",
       organizations: Array.isArray(parsed.organizations)
