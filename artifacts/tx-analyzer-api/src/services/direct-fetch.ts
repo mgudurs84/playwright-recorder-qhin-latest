@@ -150,7 +150,6 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
   });
 
   // Strategy 9: Text-level regex — extract "Some Label: some value" patterns from plain text
-  // This is the ultimate fallback and works regardless of HTML structure.
   const allText = root.text;
   const linePatterns = allText.split(/[\n\r]+/);
   for (const line of linePatterns) {
@@ -158,12 +157,93 @@ function parseHtmlDetail(html: string, transactionId: string): TransactionDetail
     if (colonIdx > 2 && colonIdx < 60) {
       const key = line.slice(0, colonIdx).trim();
       const val = line.slice(colonIdx + 1).trim();
-      // Only add if key looks like a field name (no URL-like content)
       if (key && val && !key.includes("/") && !key.includes("http") && !/^\d+$/.test(key)) {
         set(key, val);
       }
     }
   }
+
+  // Strategy 10: JSON embedded in <script> tags — portals often bootstrap data this way
+  root.querySelectorAll("script").forEach((script) => {
+    const src = script.text;
+    // Find any JSON object literals in the script
+    const jsonMatches = src.matchAll(/\{[^{}]{20,}["'][a-zA-Z][^"']*["']\s*:\s*["'][^"']+["'][^{}]*\}/g);
+    for (const m of jsonMatches) {
+      try {
+        const obj = JSON.parse(m[0]) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(obj)) {
+          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+            set(k, String(v));
+          }
+        }
+      } catch {
+        // not valid JSON — try key-value regex instead
+        const kvMatches = src.matchAll(/["']([a-zA-Z][a-zA-Z0-9_ ]{1,40})["']\s*:\s*["']([^"']{1,200})["']/g);
+        for (const kv of kvMatches) {
+          set(kv[1], kv[2]);
+        }
+      }
+    }
+    // Also match simple var/const assignments: var fieldName = "value"
+    const assignMatches = src.matchAll(/(?:var|let|const)\s+([a-zA-Z][a-zA-Z0-9_]{1,40})\s*=\s*["']([^"']{1,200})["']/g);
+    for (const a of assignMatches) {
+      set(a[1], a[2]);
+    }
+  });
+
+  // Strategy 11: Adjacent sibling div/span pairs — label+value without colons
+  // Handles Bootstrap rows like: <div class="row"><div class="col">Label</div><div class="col">Value</div></div>
+  root.querySelectorAll("div, li, section").forEach((container) => {
+    const children = container.childNodes
+      .filter((n) => {
+        if (n.nodeType !== 1) return false;
+        const el = n as typeof root;
+        const tag = el.tagName?.toLowerCase() ?? "";
+        return ["div", "span", "p", "td", "th"].includes(tag) && el.text.trim().length > 0;
+      }) as typeof root[];
+
+    // Two-child pattern: [label, value]
+    if (children.length === 2) {
+      const label = children[0].text.replace(/:$/, "").trim();
+      const value = children[1].text.trim();
+      if (label.length > 0 && label.length <= 60 && value.length > 0 && !label.includes("\n")) {
+        set(label, value);
+      }
+    }
+
+    // Even/odd pattern: label at even index, value at odd index
+    if (children.length >= 4 && children.length % 2 === 0) {
+      for (let i = 0; i + 1 < children.length; i += 2) {
+        const label = children[i].text.replace(/:$/, "").trim();
+        const value = children[i + 1].text.trim();
+        if (label.length > 0 && label.length <= 60 && value.length > 0 && !label.includes("\n")) {
+          set(label, value);
+        }
+      }
+    }
+  });
+
+  // Strategy 12: <strong> or <b> as inline label with following text node or sibling
+  root.querySelectorAll("strong, b").forEach((el) => {
+    const labelText = el.text.replace(/:$/, "").trim();
+    if (!labelText || labelText.length > 60) return;
+
+    // Check next element sibling
+    const next = el.nextElementSibling;
+    if (next && next.text.trim()) {
+      set(labelText, next.text.trim());
+      return;
+    }
+
+    // Check next text node in parent
+    const parent = el.parentNode as typeof root | null;
+    if (parent) {
+      const parentText = parent.text.replace(el.text, "").replace(/:/, "").trim();
+      if (parentText.length > 0 && parentText.length < 300) {
+        set(labelText, parentText);
+      }
+    }
+  });
 
   const oids = extractOids(allText);
 

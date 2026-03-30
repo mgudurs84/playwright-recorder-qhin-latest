@@ -227,6 +227,23 @@ export function registerAnalyzeRoutes(app: Express): void {
     }
   });
 
+  // Rawtext endpoint — returns the plain text the parser actually works with.
+  // Use this to diagnose why field extraction returns 0 results.
+  app.get("/api/analyze/rawtext/:transactionId", async (req: Request, res: Response) => {
+    const transactionId = req.params["transactionId"] as string;
+    try {
+      const detail = await fetchTransactionDetail(transactionId);
+      const plainText = detail.rawHtml ? htmlToText(detail.rawHtml) : "";
+      res.type("text/plain").send(
+        `=== PLAIN TEXT (${plainText.length} chars) ===\n\n${plainText}\n\n` +
+        `=== RAW FIELDS EXTRACTED (${Object.keys(detail.rawFields).length}) ===\n\n` +
+        Object.entries(detail.rawFields).map(([k, v]) => `${k}: ${v}`).join("\n")
+      );
+    } catch (err) {
+      res.status(500).type("text/plain").send(`Error: ${(err as Error).message}`);
+    }
+  });
+
   // Debug endpoint — returns raw HTML and parsed fields so you can inspect
   // what the portal actually sends back for a given transaction
   app.get("/api/analyze/debug/:transactionId", async (req: Request, res: Response) => {
