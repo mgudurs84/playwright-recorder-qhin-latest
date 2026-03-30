@@ -58,6 +58,7 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
   const [loadingScreenshot, setLoadingScreenshot] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>("analysis");
+  const [orgsExpanded, setOrgsExpanded] = useState(false);
 
   const { ai, detail, organizations } = result;
   const severityClass = SEVERITY_COLORS[ai.severity] ?? SEVERITY_COLORS.medium;
@@ -194,21 +195,32 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
           </div>
 
           {/* Data flow chain */}
-          {flowOrgs.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Data Flow
-              </h4>
+          {flowOrgs.length > 0 && (() => {
+            // Split into featured (requester / broker) vs fanout targets
+            const featured = flowOrgs.filter(
+              (o) => o.role === "requester" || o.role === "broker" || o.role === "intermediary"
+            );
+            const targets = flowOrgs.filter(
+              (o) => o.role !== "requester" && o.role !== "broker" && o.role !== "intermediary"
+            );
+            return (
+              <div>
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                  Data Flow
+                </h4>
 
-              {/* Visual chain */}
-              <div className="flex flex-wrap items-center gap-1 mb-3">
-                {flowOrgs.map((org, i) => {
-                  const roleColor = ROLE_COLORS[org.role] ?? ROLE_COLORS.unknown;
-                  const isLast = i === flowOrgs.length - 1;
-                  const arrow = ROLE_ARROW[org.role] ?? "→";
-                  return (
+                {/* AI data flow sentence — primary description */}
+                {ai.dataFlow && (
+                  <p className="text-xs text-muted-foreground italic border-l-2 border-border pl-2 mb-3">
+                    {ai.dataFlow}
+                  </p>
+                )}
+
+                {/* Compact visual chain: featured orgs + summary node */}
+                <div className="flex flex-wrap items-center gap-1 mb-2">
+                  {featured.map((org) => (
                     <div key={org.oid} className="flex items-center gap-1">
-                      <div className={`flex flex-col rounded-lg border px-3 py-2 ${roleColor}`}>
+                      <div className={`flex flex-col rounded-lg border px-3 py-2 ${ROLE_COLORS[org.role] ?? ROLE_COLORS.unknown}`}>
                         <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-0.5">
                           {org.role}
                         </span>
@@ -219,22 +231,53 @@ export function ResultCard({ result, screenshotsEnabled = false }: ResultCardPro
                           {org.oid}
                         </span>
                       </div>
-                      {!isLast && (
-                        <span className="text-muted-foreground font-bold text-sm px-1">{arrow}</span>
-                      )}
+                      <span className="text-muted-foreground font-bold text-sm px-1">→</span>
                     </div>
-                  );
-                })}
-              </div>
+                  ))}
 
-              {/* AI data flow sentence */}
-              {ai.dataFlow && (
-                <p className="text-xs text-muted-foreground italic border-l-2 border-border pl-2">
-                  {ai.dataFlow}
-                </p>
-              )}
-            </div>
-          )}
+                  {/* Fanout summary node */}
+                  {targets.length > 0 && (
+                    <button
+                      onClick={() => setOrgsExpanded((p) => !p)}
+                      className="flex flex-col rounded-lg border px-3 py-2 bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 transition-colors text-left"
+                    >
+                      <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-0.5">
+                        fanout targets
+                      </span>
+                      <span className="text-xs font-semibold leading-tight">
+                        {targets.length} organization{targets.length !== 1 ? "s" : ""}
+                      </span>
+                      <span className="text-[10px] opacity-60 mt-0.5">
+                        {orgsExpanded ? "▲ collapse" : "▼ expand"}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Expandable responder list */}
+                {orgsExpanded && targets.length > 0 && (
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 max-h-72 overflow-y-auto rounded-lg border border-border/60 p-2 bg-muted/20">
+                    {targets.map((org) => (
+                      <div
+                        key={org.oid}
+                        className={`flex flex-col rounded border px-2 py-1.5 ${ROLE_COLORS[org.role] ?? ROLE_COLORS.unknown}`}
+                      >
+                        <span className="text-[10px] font-bold uppercase opacity-60 mb-0.5">
+                          {org.role}
+                        </span>
+                        <span className="text-xs font-medium leading-tight truncate">
+                          {org.name !== org.oid ? org.name : ""}
+                        </span>
+                        <span className="text-[10px] font-mono opacity-50 truncate">
+                          {org.oid}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Summary */}
           <div>

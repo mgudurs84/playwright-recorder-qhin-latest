@@ -252,6 +252,42 @@ export async function analyzeTransaction(
       ) as AnalysisResult["ai"]["severity"],
       resolution: parsed.resolution ?? "No action required",
     };
+
+    // Override stats with values computed directly from rawLogs (if available).
+    // This prevents the AI from under-counting when it sees many "0 documents"
+    // per-org lines and misses the authoritative "Completed brokered document
+    // search with N documents retrieved" summary line.
+    if (detail.rawLogs) {
+      const rawEntries = parseLogLines(detail.rawLogs);
+      const rawStats = computeLogStats(rawEntries);
+
+      if (rawStats.finalDocumentsRetrieved != null) {
+        const docs =
+          rawStats.finalDocsInFanout != null &&
+          rawStats.finalDocsInFanout !== rawStats.finalDocumentsRetrieved
+            ? `${rawStats.finalDocumentsRetrieved} retrieved (${rawStats.finalDocsInFanout} in fanout)`
+            : `${rawStats.finalDocumentsRetrieved} retrieved`;
+        ai = { ...ai, documentsFound: docs };
+      }
+
+      const hasFanoutData =
+        rawStats.patientSearchFanoutCount != null || rawStats.fanoutOrgCount != null;
+      if (hasFanoutData) {
+        const parts = [
+          rawStats.patientSearchFanoutCount != null
+            ? `${rawStats.patientSearchFanoutCount} orgs (patient search, ${rawStats.patientsFound ?? "?"} patients found)`
+            : null,
+          rawStats.fanoutOrgCount != null
+            ? `${rawStats.fanoutOrgCount} orgs (document fanout)`
+            : null,
+        ].filter(Boolean);
+        ai = { ...ai, fanoutOrgCount: parts.join(" → ") };
+      }
+
+      if (rawStats.durationMs != null && ai.durationMs === "unknown") {
+        ai = { ...ai, durationMs: `${rawStats.durationMs}ms` };
+      }
+    }
   } catch (aiErr) {
     console.warn(
       `[Analyze] AI analysis failed for ${transactionId}:`,
