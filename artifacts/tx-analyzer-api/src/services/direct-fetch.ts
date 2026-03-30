@@ -549,10 +549,21 @@ async function fetchRawPayload(
  * Based on the known detail endpoint naming pattern: LoadTransactionLogsDetailPartialView
  */
 const CANDIDATE_LOG_ENDPOINTS: Array<{ url: string; method: "GET" | "POST" }> = [
+  // Variants of "Detail" + log suffix (same base as LoadTransactionLogsDetailPartialView)
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailLogLinesPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailAuditPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailEventsPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailMessagesPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsDetailLogPartialView`, method: "POST" },
+  // Without "Detail" in the name
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogLinesPartialView`, method: "POST" },
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsLogLinesPartialView`, method: "POST" },
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsLogsPartialView`, method: "POST" },
   { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsEventLogsPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionLogsAuditPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadAuditLogPartialView`, method: "POST" },
+  { url: `${PORTAL_URL}/TransactionLogs/LoadTransactionAuditLogPartialView`, method: "POST" },
+  // GET variants
   { url: `${PORTAL_URL}/TransactionLogs/GetTransactionLogLines`, method: "GET" },
   { url: `${PORTAL_URL}/TransactionLogs/GetLogLines`, method: "GET" },
   { url: `${PORTAL_URL}/TransactionLogs/GetLogs`, method: "GET" },
@@ -560,23 +571,78 @@ const CANDIDATE_LOG_ENDPOINTS: Array<{ url: string; method: "GET" | "POST" }> = 
 ];
 
 /**
- * Scan the detail HTML's script tags for any AJAX endpoint URLs referencing "log"
- * (e.g., Kendo Grid DataSource read URLs like { url: '/TransactionLogs/GetLogs' }).
+ * Scan any HTML for portal endpoint URLs that could serve broker log lines.
+ * Looks broadly at all /TransactionLogs/Load* patterns — not just "log" ones —
+ * because the actual log-lines action name may not contain the word "log".
  */
 function extractLogEndpointsFromHtml(html: string): string[] {
   const found: string[] = [];
+
+  // Pattern 1 — string literals in <script> blocks containing a portal path
   const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
   for (const [, scriptContent] of scriptBlocks) {
-    // Match string literals that look like portal paths containing "log"
-    const urlLiterals = scriptContent.match(/['"](\/[A-Za-z/]+[Ll]og[A-Za-z/]*)['"]/g) ?? [];
+    const urlLiterals =
+      scriptContent.match(/['"](\/(TransactionLogs|AuditLog|BrokerLog)[A-Za-z/]*)['"]/g) ?? [];
     for (const lit of urlLiterals) {
       const path = lit.replace(/['"]/g, "");
-      if (/log/i.test(path) && !/login/i.test(path)) {
-        found.push(`${PORTAL_URL}${path}`);
-      }
+      if (!/login/i.test(path)) found.push(`${PORTAL_URL}${path}`);
     }
   }
+
+  // Pattern 2 — onclick / data-url attributes referencing Load*PartialView
+  const attrMatches = html.match(/(?:onclick|data-url|href)=["']([^"']*Load[^"']*PartialView[^"']*)['"]/gi) ?? [];
+  for (const m of attrMatches) {
+    const pathMatch = m.match(/["']([^"']+)["']/);
+    if (pathMatch) {
+      const path = pathMatch[1].split("(")[0]; // strip JS args
+      if (path.startsWith("/")) found.push(`${PORTAL_URL}${path}`);
+    }
+  }
+
+  // Pattern 3 — bare /TransactionLogs/Anything anywhere in inline JS or HTML
+  const bareMatches = html.match(/\/TransactionLogs\/[A-Za-z]+/g) ?? [];
+  for (const path of bareMatches) {
+    if (!/login/i.test(path)) found.push(`${PORTAL_URL}${path}`);
+  }
+
   return [...new Set(found)];
+}
+
+/**
+ * Fetch the full transaction detail PAGE (not the partial view) and scan its
+ * JavaScript for endpoint URLs.  The full page has all Kendo Grid initialisation
+ * code that references the real log-lines endpoint.
+ */
+async function discoverEndpointsFromFullPage(
+  transactionId: string,
+  cookieHeader: string
+): Promise<string[]> {
+  const candidates = [
+    `${PORTAL_URL}/TransactionLogs/Details/${transactionId}`,
+    `${PORTAL_URL}/TransactionLogs/Detail/${transactionId}`,
+    `${PORTAL_URL}/TransactionLogs/View/${transactionId}`,
+    `${PORTAL_URL}/TransactionLogs/Index?transactionId=${transactionId}`,
+    `${PORTAL_URL}/TransactionLogs/Index?search=${transactionId}`,
+  ];
+  const headers = {
+    ...BASE_HEADERS,
+    Cookie: cookieHeader,
+    Accept: "text/html,*/*",
+  };
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { method: "GET", headers });
+      if (!res.ok) continue;
+      const html = await res.text();
+      if (html.includes("UserName") && html.includes("Password")) continue; // login redirect
+      const found = extractLogEndpointsFromHtml(html);
+      if (found.length > 0) {
+        console.log(`[DirectFetch] Full-page discovery from ${url}: ${found.length} endpoint(s) found`);
+        return found;
+      }
+    } catch { /* ignore */ }
+  }
+  return [];
 }
 
 /**
@@ -624,10 +690,20 @@ async function fetchLogLines(
     ...(formToken ? { "__RequestVerificationToken": formToken } : {}),
   };
 
+  // Run full-page discovery in parallel with other prep work
+  const fullPageEndpointsPromise = discoverEndpointsFromFullPage(transactionId, cookieHeader);
+  const fullPageEndpoints = await fullPageEndpointsPromise;
+
   // Build the ordered list of URLs to try
   const toTry: Array<{ url: string; method: "GET" | "POST" }> = [
+    // 1. Playwright-discovered endpoints (highest confidence)
     ...discoveredLogEndpoints.map((e) => ({ url: e.url, method: e.method as "GET" | "POST" })),
+    // 2. Extracted from the detail HTML's inline scripts
     ...(detailHtml ? extractLogEndpointsFromHtml(detailHtml).map((url) => ({ url, method: "POST" as const })) : []),
+    // 3. Extracted from the full transaction detail page (GET) — may reveal real endpoint
+    ...fullPageEndpoints.map((url) => ({ url, method: "POST" as const })),
+    ...fullPageEndpoints.map((url) => ({ url, method: "GET" as const })),
+    // 4. Hardcoded candidate names
     ...CANDIDATE_LOG_ENDPOINTS,
   ];
 
