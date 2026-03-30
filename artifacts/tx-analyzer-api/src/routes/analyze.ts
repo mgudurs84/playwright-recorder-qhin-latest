@@ -81,6 +81,25 @@ function buildPrompt(
     ? detail.rawLogs.slice(0, 20000)  // cap at ~20k chars
     : null;
 
+  // Pre-compute key statistics from raw logs so Gemini cannot hallucinate counts
+  const logStats = detail.rawLogs
+    ? computeLogStats(parseLogLines(detail.rawLogs))
+    : null;
+
+  const computedFactsBlock = logStats
+    ? `=== COMPUTED FACTS (DO NOT DEVIATE FROM THESE NUMBERS) ===
+FINAL DOCUMENTS RETRIEVED (deduplicated, authoritative): ${logStats.finalDocumentsRetrieved ?? "not found in log"}
+TOTAL DOCUMENTS IN FANOUT (before dedup): ${logStats.finalDocsInFanout ?? "not found in log"}
+PATIENT SEARCH FANOUT ORG COUNT: ${logStats.patientSearchFanoutCount ?? "not found in log"}
+PATIENTS FOUND (patient search): ${logStats.patientsFound ?? "not found in log"}
+DOCUMENT SEARCH FANOUT ORG COUNT: ${logStats.fanoutOrgCount ?? "not found in log"}
+TOTAL DURATION: ${logStats.durationMs != null ? `${logStats.durationMs}ms` : "unknown"}
+OVERALL STATUS: ${logStats.overallStatus ?? "unknown"}
+=== END COMPUTED FACTS ===
+
+`
+    : "";
+
   const hasStructured = structuredFields.trim().length > 0;
   const hasRaw = rawText && rawText.trim().length > 0;
 
@@ -109,9 +128,9 @@ function buildPrompt(
   return `You are a CommonWell Health Alliance (CW) L1/L2 support analyst.
 CVS Health operates as the CommonWell broker/intermediary that fans out requests to member organizations.
 
-${
+${computedFactsBlock}${
   rawLogsText
-    ? `--- BROKER LOG LINES (MOST AUTHORITATIVE — use these for ALL fanout, per-org results, document counts, and errors) ---
+    ? `--- BROKER LOG LINES (for context and per-org error details — use COMPUTED FACTS above for all counts) ---
 ${rawLogsText}
 --- END BROKER LOG LINES ---
 
@@ -155,30 +174,30 @@ ${hasStructured ? `ALL EXTRACTED FIELDS:\n${structuredFields}\n` : ""}
 OID-TO-ORG RESOLUTION:
 ${orgs.map((o) => `  ${o.oid} → ${o.name}`).join("\n") || "  (no OIDs resolved)"}
 
-INSTRUCTIONS — answer every field below using the BROKER LOG LINES as the primary source when available:
+INSTRUCTIONS — use COMPUTED FACTS above for all counts; use BROKER LOG LINES for per-org error details:
 1. TRANSACTION CATEGORY: Classify as one of: Document Query, Document Retrieve, Patient Search, Patient Match, Document Submission, or Other.
-2. BROKERING CHAIN: Identify the full chain from log lines. Show: Initiating Org → CVS Health (broker) → each target org with its result (success/error/no match). If log lines are unavailable, say so explicitly.
-3. FANOUT ORG COUNT: If broker log lines are available above, count the unique orgs and state the number. If NOT available, use "paste broker logs". Do NOT write a sentence — this field is a SHORT label for a stats tile (max 8 words).
-4. DOCUMENTS FOUND: If broker log lines are available, state the count. If NOT available, use "paste broker logs". Do NOT write a sentence — this is a SHORT label for a stats tile (max 8 words).
-5. DURATION: Calculate from Start Time and End Time. Long durations (>1s) indicate broker fanout.
-6. ORGANIZATIONS: List every org with name (from OID resolution or log lines), OID, role, and outcome. Put per-org detail in the summary and l1Actions.
-7. L1/L2 ACTIONS: Be highly specific. If broker log lines were not available, the first L1 action MUST be "Use the 'Paste Log Text' tab to paste the broker logs for this transaction — the portal audit log does not contain per-org fanout detail." Then list any errors visible from the summary fields.
+2. BROKERING CHAIN: Show: Initiating Org → CVS Health (broker) → each target org with its result. Use exact counts from COMPUTED FACTS.
+3. FANOUT ORG COUNT: Use COMPUTED FACTS. Format as short label, e.g. "14 orgs (patient search) → 104 orgs (document fanout)". Do NOT count from log lines.
+4. DOCUMENTS FOUND: Use COMPUTED FACTS "FINAL DOCUMENTS RETRIEVED" value. Do NOT count from individual per-org lines.
+5. DURATION: Use COMPUTED FACTS "TOTAL DURATION". Fallback to CALCULATED DURATION from extracted fields.
+6. ORGANIZATIONS: List every org with name, OID, role, and outcome. Put per-org detail in the summary and l1Actions.
+7. L1/L2 ACTIONS: Be highly specific. If broker log lines were not available, the first L1 action MUST be "Use the 'Paste Log Text' tab to paste the broker logs for this transaction." Then list errors from summary fields.
 
 CRITICAL FIELD LENGTH RULES — the stats bar tiles show these 4 fields directly:
 - "transactionCategory": max 4 words
-- "fanoutOrgCount": max 8 words, e.g. "104 organizations", "paste broker logs", "1 (direct)"
-- "documentsFound": max 8 words, e.g. "8 documents retrieved", "0", "paste broker logs"
+- "fanoutOrgCount": max 8 words, e.g. "14 orgs (patient search) → 104 orgs (doc fanout)", "paste broker logs", "1 (direct)"
+- "documentsFound": max 8 words, e.g. "8 retrieved (29 fanout)", "0", "paste broker logs"
 - "durationMs": max 10 chars, e.g. "4163ms", "unknown"
 Never put sentences or explanations in these four fields. Explanations go in summary, l1Actions, l2Actions.
 
 Respond ONLY with a valid JSON object — no markdown, no code blocks:
 {
-  "summary": "3-4 sentence description covering: what type of operation, who requested it, which broker handled it, how many orgs were involved (if known from log lines), how many documents found (if applicable), and the outcome. If broker log lines were unavailable, note that the portal audit log only contains gateway-level entries and that broker fanout details require pasting the broker logs via the Paste Log Text tab.",
+  "summary": "3-4 sentence description: operation type, requesting org, broker, patient search fanout (exact count from COMPUTED FACTS), document search fanout (exact count from COMPUTED FACTS), documents retrieved (exact count from COMPUTED FACTS), outcome. If broker logs unavailable note the limitation.",
   "transactionCategory": "Document Query|Document Retrieve|Patient Search|Patient Match|Other",
-  "fanoutOrgCount": "SHORT label only — e.g. '104 organizations' or '1 (direct)' or 'paste broker logs'",
-  "documentsFound": "SHORT label only — e.g. '8 retrieved (29 fanout)' or '0' or 'paste broker logs'",
-  "durationMs": "e.g. '3901ms' or 'unknown'",
-  "dataFlow": "Step-by-step chain: 'Org A (requester) → CVS Health (broker) → 104 member orgs (fanout)'",
+  "fanoutOrgCount": "use COMPUTED FACTS — e.g. '14 orgs (patient search) → 104 orgs (document fanout)'",
+  "documentsFound": "use COMPUTED FACTS — e.g. '8 retrieved (29 in fanout)' or '0'",
+  "durationMs": "use COMPUTED FACTS duration, e.g. '3901ms'",
+  "dataFlow": "Exact chain using COMPUTED FACTS counts: 'Requester Org (requester) → CVS Health (broker) → 14 orgs patient search (4 patients found) → 104 orgs document fanout (8 docs retrieved)'",
   "rootCause": "Root cause of any errors, or 'No errors detected'",
   "organizations": [
     {"oid": "2.16.840.1.x", "name": "Org Name", "role": "requester|responder|intermediary|broker"}
