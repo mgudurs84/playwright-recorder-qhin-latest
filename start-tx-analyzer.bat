@@ -74,4 +74,4 @@ echo ============================================================
 echo.
 echo You can close this window — the service windows stay open.
 echo.
-pause
+if not defined NO_PAUSE pause
