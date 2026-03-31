@@ -55,13 +55,13 @@ echo Starting services in separate windows...
 echo.
 
 :: ── API server (port 8000) ───────────────────────────────────
-start "TX Analyzer API  [port 8000]" cmd /k "title TX Analyzer API [port 8000] && cd /d %~dp0 && pnpm --filter @workspace/tx-analyzer-api run dev"
+start "TX Analyzer API  [port 8000]" cmd /k "title TX Analyzer API [port 8000] && cd /d "%~dp0" && pnpm --filter @workspace/tx-analyzer-api run dev"
 
 :: Short pause so Playwright Chromium install finishes before the frontend starts
 timeout /t 3 /nobreak >nul
 
 :: ── Frontend (port 5173) ─────────────────────────────────────
-start "CW TX Analyzer UI  [port 5173]" cmd /k "title CW TX Analyzer UI [port 5173] && cd /d %~dp0 && set PORT=5173 && set BASE_PATH=/cw-tx-analyzer/ && pnpm --filter @workspace/cw-tx-analyzer run dev"
+start "CW TX Analyzer UI  [port 5173]" cmd /k "title CW TX Analyzer UI [port 5173] && cd /d "%~dp0" && set PORT=5173 && set BASE_PATH=/cw-tx-analyzer/ && pnpm --filter @workspace/cw-tx-analyzer run dev"
 
 echo.
 echo ============================================================

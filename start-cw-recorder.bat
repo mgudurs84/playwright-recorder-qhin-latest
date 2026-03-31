@@ -55,13 +55,13 @@ echo Starting services in separate windows...
 echo.
 
 :: ── API server (port 8080) ───────────────────────────────────
-start "CW Recorder API  [port 8080]" cmd /k "title CW Recorder API [port 8080] && cd /d %~dp0 && pnpm --filter @workspace/api-server run dev"
+start "CW Recorder API  [port 8080]" cmd /k "title CW Recorder API [port 8080] && cd /d "%~dp0" && pnpm --filter @workspace/api-server run dev"
 
 :: Short pause so Playwright Chromium install finishes before the frontend starts
 timeout /t 3 /nobreak >nul
 
 :: ── Frontend (port 5174 — avoids clash if TX Analyzer is also running) ──
-start "CW Recorder UI  [port 5174]" cmd /k "title CW Recorder UI [port 5174] && cd /d %~dp0 && set PORT=5174 && set BASE_PATH=/ && pnpm --filter @workspace/cw-recorder run dev"
+start "CW Recorder UI  [port 5174]" cmd /k "title CW Recorder UI [port 5174] && cd /d "%~dp0" && set PORT=5174 && set BASE_PATH=/ && pnpm --filter @workspace/cw-recorder run dev"
 
 echo.
 echo ============================================================

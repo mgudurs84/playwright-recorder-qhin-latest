@@ -11,6 +11,26 @@ echo   - CW Transaction Analyzer  (ports 8000 + 5173)
 echo   - CW Recorder              (ports 8080 + 5174)
 echo.
 
+:: ── Prerequisite checks ─────────────────────────────────────
+where node >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Node.js is not installed or not on PATH.
+    echo Download it from https://nodejs.org  ^(LTS version^)
+    echo.
+    pause
+    exit /b 1
+)
+
+where pnpm >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: pnpm is not installed.
+    echo Run:  npm install -g pnpm
+    echo Then reopen this window and try again.
+    echo.
+    pause
+    exit /b 1
+)
+
 :: ── Combined .env checks ─────────────────────────────────────
 set MISSING_ENV=0
 
