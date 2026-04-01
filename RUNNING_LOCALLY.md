@@ -40,13 +40,9 @@ The Transaction Analyzer is made up of two pieces that run in **two separate ter
 
 ### 1. Configure the API environment
 
-Copy the example environment file and fill in your values:
+Open `artifacts/tx-analyzer-api/.env` in any text editor and fill in your values:
 
-```powershell
-copy artifacts\tx-analyzer-api\.env artifacts\tx-analyzer-api\.env.local
-```
-
-> The `.env` file already has working placeholder values. Open it in any text editor and update the fields below:
+> **Important:** The app reads `.env` directly — do not copy it to `.env.local` (that file is not loaded). Edit `.env` in place and do not commit it.
 
 ```env
 # Required
@@ -63,7 +59,11 @@ VERTEX_LOCATION=us-central1
 SESSION_MAX_AGE_HOURS=24
 ```
 
-See `artifacts/tx-analyzer-api/.env` for the full reference file.
+To prevent accidentally committing credentials, you can tell Git to ignore changes to this file:
+
+```powershell
+git update-index --skip-worktree artifacts/tx-analyzer-api/.env
+```
 
 ### 2. Start the API server (Terminal 1)
 
@@ -206,4 +206,5 @@ Leave `GCP_PROJECT_ID` blank when using Option B (the project ID is embedded in 
 | Cannot reach CommonWell portal | VPN not connected | Connect to your organization's VPN, then restart the API server |
 | `google.auth.exceptions.DefaultCredentialsError` | GCP credentials not configured | Follow the GCP Auth section above (Option A or Option B) |
 | `pnpm: command not found` | pnpm not installed globally | Run `npm install -g pnpm` in an Administrator PowerShell, then reopen your terminal |
-| Pages load but API calls return 404 | Frontend proxying to wrong port | Confirm the API server is running on the expected port (8000 or 8080) and that no `.env` overrides the default |
+| Login shows "HTTP 404" | API server not running | Start the API server terminal first (`pnpm dev` in `artifacts\tx-analyzer-api` or `artifacts\api-server`). The frontend can load without the API, but all calls will 404 until the API is up. |
+| API calls return 404 after the API is running | Port mismatch or wrong base path | Confirm `PORT` in the API `.env` matches what the frontend proxies to (8000 for TX Analyzer, 8080 for Recorder). Open the app at the correct URL (see "open your browser to" in each section above). |
