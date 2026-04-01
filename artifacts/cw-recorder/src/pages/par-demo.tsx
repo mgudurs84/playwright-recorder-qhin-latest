@@ -787,8 +787,9 @@ export default function ParDemo() {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const err = await res.json() as { error?: string };
-        setDemoState((p) => ({ ...p, status: "error", errorMessage: err.error ?? "Failed to start" }));
+        let errorMsg = `Server error ${res.status}`;
+        try { const err = await res.json() as { error?: string }; errorMsg = err.error ?? errorMsg; } catch { /* non-JSON body */ }
+        setDemoState((p) => ({ ...p, status: "error", errorMessage: errorMsg }));
         return;
       }
       setDemoState({ status: "running", steps: [], errorMessage: null, aiSummary: null, aiSummaryPending: false });
@@ -813,7 +814,11 @@ export default function ParDemo() {
     const res = await fetch(apiUrl("/api/par-demo/otp"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ otp }),
     });
-    if (!res.ok) { const err = await res.json() as { error?: string }; throw new Error(err.error ?? "Failed"); }
+    if (!res.ok) {
+      let errorMsg = `Server error ${res.status}`;
+      try { const err = await res.json() as { error?: string }; errorMsg = err.error ?? errorMsg; } catch { /* non-JSON body */ }
+      throw new Error(errorMsg);
+    }
   }, []);
 
   const [pdfGenerating, setPdfGenerating] = useState(false);
