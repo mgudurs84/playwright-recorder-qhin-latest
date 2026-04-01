@@ -45,7 +45,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       [`${basePath}api`]: {
-        target: "http://localhost:8000",
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
         rewrite: (p) => p.replace(new RegExp(`^${basePath}`), "/"),
         configure: (proxy) => {

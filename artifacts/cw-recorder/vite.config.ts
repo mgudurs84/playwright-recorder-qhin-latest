@@ -51,9 +51,20 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       [`${basePath}api`]: {
-        target: "http://localhost:8080",
+        target: "http://127.0.0.1:8080",
         changeOrigin: true,
         rewrite: (p) => p.replace(new RegExp(`^${basePath}`), "/"),
+        configure: (proxy) => {
+          proxy.on("error", (err, _req, res) => {
+            console.error("[vite-proxy] api-server unreachable:", err.message);
+            if (!res.headersSent) {
+              (res as import("http").ServerResponse).writeHead(502, { "Content-Type": "application/json" });
+              (res as import("http").ServerResponse).end(
+                JSON.stringify({ error: "API server is not running. Start api-server (port 8080) and try again." })
+              );
+            }
+          });
+        },
       },
     },
     fs: {
