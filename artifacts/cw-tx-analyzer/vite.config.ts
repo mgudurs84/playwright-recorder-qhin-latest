@@ -48,6 +48,17 @@ export default defineConfig({
         target: "http://localhost:8000",
         changeOrigin: true,
         rewrite: (p) => p.replace(new RegExp(`^${basePath}`), "/"),
+        configure: (proxy) => {
+          proxy.on("error", (err, _req, res) => {
+            console.error("[vite-proxy] tx-analyzer-api unreachable:", err.message);
+            if (!res.headersSent) {
+              (res as import("http").ServerResponse).writeHead(502, { "Content-Type": "application/json" });
+              (res as import("http").ServerResponse).end(
+                JSON.stringify({ error: "API server is not running. Start tx-analyzer-api (port 8000) and try again." })
+              );
+            }
+          });
+        },
       },
     },
     fs: {

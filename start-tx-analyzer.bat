@@ -57,19 +57,26 @@ echo.
 :: ── API server (port 8000) ───────────────────────────────────
 start "TX Analyzer API  [port 8000]" cmd /k "title TX Analyzer API [port 8000] && cd /d "%~dp0" && pnpm --filter @workspace/tx-analyzer-api run dev"
 
-:: Short pause so Playwright Chromium install finishes before the frontend starts
-timeout /t 3 /nobreak >nul
-
 :: ── Frontend (port 5173) ─────────────────────────────────────
 start "CW TX Analyzer UI  [port 5173]" cmd /k "title CW TX Analyzer UI [port 5173] && cd /d "%~dp0" && set PORT=5173 && set BASE_PATH=/cw-tx-analyzer/ && pnpm --filter @workspace/cw-tx-analyzer run dev"
 
 echo.
 echo ============================================================
-echo  Both windows are starting up. Wait ~15 seconds then open:
+echo  Two windows are opening:
 echo.
+echo  [1] TX Analyzer API  (port 8000)
+echo  [2] CW TX Analyzer UI  (port 5173)
+echo.
+echo  IMPORTANT — before you log in:
+echo  Watch window [1] until you see:
+echo    "Server listening on port 8000"
+echo  (First run may take a few minutes to download Chromium)
+echo.
+echo  Then open your browser to:
 echo    http://localhost:5173/cw-tx-analyzer/
 echo.
-echo  API running at: http://localhost:8000
+echo  If login shows an error, check that window [1] is still
+echo  running and shows the "listening on port 8000" message.
 echo ============================================================
 echo.
 echo You can close this window — the service windows stay open.

@@ -206,5 +206,5 @@ Leave `GCP_PROJECT_ID` blank when using Option B (the project ID is embedded in 
 | Cannot reach CommonWell portal | VPN not connected | Connect to your organization's VPN, then restart the API server |
 | `google.auth.exceptions.DefaultCredentialsError` | GCP credentials not configured | Follow the GCP Auth section above (Option A or Option B) |
 | `pnpm: command not found` | pnpm not installed globally | Run `npm install -g pnpm` in an Administrator PowerShell, then reopen your terminal |
-| Login shows "HTTP 404" | API server not running | Start the API server terminal first (`pnpm dev` in `artifacts\tx-analyzer-api` or `artifacts\api-server`). The frontend can load without the API, but all calls will 404 until the API is up. |
-| API calls return 404 after the API is running | Port mismatch or wrong base path | Confirm `PORT` in the API `.env` matches what the frontend proxies to (8000 for TX Analyzer, 8080 for Recorder). Open the app at the correct URL (see "open your browser to" in each section above). |
+| Login shows "API server is not running…" | API server not started yet | Watch the API terminal window until you see **"Server listening on port 8000"** before trying to log in. First run may take several minutes while Playwright downloads Chromium. |
+| Login still shows an error after API is running | Port mismatch or wrong base path | Confirm `PORT` in the API `.env` matches what the frontend proxies to (8000 for TX Analyzer, 8080 for Recorder). Open the app at the correct URL (see "open your browser to" in each section above). |
