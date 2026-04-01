@@ -54,8 +54,8 @@ echo.
 echo Starting services in separate windows...
 echo.
 
-:: ── API server (port 8000) ───────────────────────────────────
-start "TX Analyzer API  [port 8000]" cmd /k "title TX Analyzer API [port 8000] && cd /d "%~dp0" && pnpm --filter @workspace/tx-analyzer-api run dev"
+:: ── API server (port 8001) ───────────────────────────────────
+start "TX Analyzer API  [port 8001]" cmd /k "title TX Analyzer API [port 8001] && cd /d "%~dp0" && pnpm --filter @workspace/tx-analyzer-api run dev"
 
 :: ── Frontend (port 5173) ─────────────────────────────────────
 start "CW TX Analyzer UI  [port 5173]" cmd /k "title CW TX Analyzer UI [port 5173] && cd /d "%~dp0" && set PORT=5173 && set BASE_PATH=/cw-tx-analyzer/ && pnpm --filter @workspace/cw-tx-analyzer run dev"
@@ -64,19 +64,23 @@ echo.
 echo ============================================================
 echo  Two windows are opening:
 echo.
-echo  [1] TX Analyzer API  (port 8000)
+echo  [1] TX Analyzer API  (port 8001)
 echo  [2] CW TX Analyzer UI  (port 5173)
 echo.
 echo  IMPORTANT — before you log in:
 echo  Watch window [1] until you see:
-echo    "Server listening on port 8000"
+echo    "Server listening on port 8001"
 echo  (First run may take a few minutes to download Chromium)
 echo.
 echo  Then open your browser to:
 echo    http://localhost:5173/cw-tx-analyzer/
 echo.
+echo  NOTE: Always use "localhost" — NOT your machine's IP address.
+echo  Using your LAN IP (e.g. 10.x.x.x) bypasses the local proxy
+echo  and will cause 404 errors on API calls.
+echo.
 echo  If login shows an error, check that window [1] is still
-echo  running and shows the "listening on port 8000" message.
+echo  running and shows the "listening on port 8001" message.
 echo ============================================================
 echo.
 echo You can close this window — the service windows stay open.
