@@ -70,6 +70,10 @@ echo.
 echo    http://localhost:5174/
 echo.
 echo  API running at: http://localhost:8080
+echo.
+echo  NOTE: Always use "localhost" — NOT your machine's IP address.
+echo  Using your LAN IP (e.g. 10.x.x.x) bypasses the local proxy
+echo  and will cause 404 errors on every API call.
 echo ============================================================
 echo.
 echo You can close this window — the service windows stay open.
